@@ -357,7 +357,7 @@ Capture the PR URL from output.
 gh pr comment <pr-number> --body "@codex review"
 ```
 
-This yields exactly one run per head, always in the gate-trusted form: findings arrive as a COMMENTED review; a clean pass arrives as a head-naming "didn't find any major issues" comment. **Verify it took** per the [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) playbook's re-trigger step (routed via `address-pr-review`): 👀 ack on the trigger comment within ~1 min (no 👀 → re-fire, cap 3 per head per the playbook), review lands in ~5-15 min — overlap the wait with Step 9's local code review.
+This yields exactly one run per head, always in the gate-trusted form: findings arrive as a COMMENTED review; a clean pass arrives as a head-naming "didn't find any major issues" comment. **Verify it took** per the [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) playbook's re-trigger step (routed via `address-pr-review`): 👀 ack on the trigger comment within ~1 min (no 👀 → re-fire, cap 3 per head per the playbook), review lands in ~5-15 min — overlap the wait with Step 9's local code review. When its findings land, handle every thread per Step 9's review-thread hygiene rule.
 
 Skip only if the repo has no Codex (no `## Code Review Rules` section on the default branch AND your branch doesn't add it). The `babysit-prs` sweep (ai-review-kit companion, if installed) backstops any PR whose trigger never fired — the merge-gate goes red with "Codex configured but never touched", and the sweep fires the trigger within ≤30 min; without it, re-fire the trigger by hand when the gate reports that. (If auto-review is ever re-enabled, revert this step to settle-then-fire: wait for the auto-run's 👀 to clear, trigger only on a 👍-only clean pass — never run two Codex reviews concurrently.)
 
@@ -375,6 +375,8 @@ After creating the PR, run a code review before checking CI. This catches logic 
 - **Critical issues** — must fix before proceeding. Push fixes, re-run review if needed.
 - **Important issues** — should fix. Push fixes.
 - **Suggestions** — nice to have. Fix if quick, otherwise note for follow-up.
+
+**Review-thread hygiene (applies to every PR review thread — bot or human, whenever it lands, including mid-ticket):** for each finding, fix it (or justify a won't-fix), reply to its thread naming the fixing commit or the reason, resolve the thread via the `resolveReviewThread` GraphQL mutation, and re-trigger the reviewer if the head changed — the full loop policy lives in the [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) playbook (routed via `address-pr-review`); don't restate it here. Fixing without replying/resolving left unresolved threads on portfolio-v2 PR #33 (2026-07-13).
 
 Present the review findings to the user for their own review before proceeding. Do NOT skip ahead — the user should see the review results and approve before moving to CI.
 
@@ -496,7 +498,7 @@ Also record a worklog comment via `mcp__linear-server__save_comment` with the PR
 | 6 | Implement | Subagents (`Task` tool, `general-purpose`) with TDD |
 | 7 | Verify (unit + E2E + manual) | Subagent (`Bash`) or `superpowers:verification-before-completion` |
 | 8 | Create PR | `gh pr create`; if the DEFAULT branch's AGENTS.md has `## Code Review Rules` (base-OR-head, not just your feature branch): fire `@codex review` immediately (auto-review disabled account-wide — trigger-only) + verify 👀 ack |
-| 9 | Code review | Project code-review skill (if exists) OR `superpowers:requesting-code-review` |
+| 9 | Code review | Project code-review skill (if exists) OR `superpowers:requesting-code-review`; every review thread: fix → reply → resolve (`resolveReviewThread`) per ai-review-kit playbook |
 | 10 | Check CI | `gh pr checks --watch` → fix failures if any |
 | 11 | Local deploy (if UI) | Project dev command in worktree → user manual tests → wait for feedback |
 | 12 | Attach PR + confirm In Review | PR open → native integration auto-moves to `In Review`. `save_issue {id, links:[{url,title}]}` (append-only) + `save_comment` worklog → verify via `get_issue`; manual `state:"In Review"` only as fallback if native didn't fire |
