@@ -76,8 +76,10 @@ Skills are the *how*; the *policy* lives in a global `CLAUDE.md`
 [`hooks/merge-gate.mjs`](hooks/merge-gate.mjs) — a Claude Code `PreToolUse` hook that
 makes §5 mechanical instead of aspirational. It inspects every Bash call and:
 
-- **denies** pushes to `main`/`master` (including `git -C`, `--git-dir`, remote-ref and
-  branch-deletion forms);
+- **denies** pushes to `main`/`master` — it parses the push grammar rather than
+  pattern-matching shapes, so `git -C`/`--git-dir` forms, any remote name, multi-ref
+  pushes, `--all`/`--mirror`, refspec and branch-deletion forms, and a bare `git push`
+  while sitting on main (resolved against the real current branch) are all caught;
 - **denies** REST/GraphQL PR merges, auto-merge mutations, and interpreter-wrapped
   merges (`python -c "subprocess.run(['gh','pr','merge',…])"`) — shapes the gate can't
   inspect are refused, not trusted;
@@ -207,6 +209,7 @@ enforces, and §6's opt-in semantics).
 | `skills/rapid-prototype/` | Disposable-work escape hatch (skips the whole pipeline, on purpose) |
 | `skills/plan-review-ceo/SKILL.md.archived` | Archived business-value review — for teams, not solos |
 | `hooks/merge-gate.mjs` | PreToolUse hook: bans main-pushes + merge bypasses, gates `gh pr merge` on reviewer state, fails closed |
+| `hooks/merge-gate.test.mjs` | Plain-node regression tests for the hook (no framework, no network — stubbed `gh`, fixture repos). Run `node hooks/merge-gate.test.mjs` after any hook edit |
 | `templates/project-CLAUDE.md` | Per-repo seed: Linear opt-in block + verification commands the skills read |
 | `CLAUDE.md.example` | The author's live global CLAUDE.md, verbatim — the policy layer |
 | `setup.sh` | Idempotent installer (copy or `--link`), wires the hook into `settings.json` |
