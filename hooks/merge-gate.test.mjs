@@ -28,9 +28,11 @@ if (a.startsWith('pr view')) { process.stdout.write('{"number":7,"headRefOid":"$
 if (/--paginate --slurp/.test(a) && /\\/reviews$/.test(a)) { process.stdout.write(j(E.GH_REVIEWS, '[[]]')); process.exit(0); }
 if (/--paginate --slurp/.test(a) && /\\/comments$/.test(a)) { process.stdout.write(j(E.GH_COMMENTS, '[[]]')); process.exit(0); }
 if (/--paginate --slurp/.test(a) && /\\/reactions$/.test(a)) { process.stdout.write(j(E.GH_REACTIONS, '[[]]')); process.exit(0); }
+if (/--paginate --slurp/.test(a) && /\\/timeline$/.test(a)) { process.stdout.write(j(E.GH_TIMELINE, '[[]]')); process.exit(0); }
+if (/--paginate --slurp/.test(a) && /commits\\/[^ ]+\\/pulls$/.test(a)) { process.stdout.write(j(E.GH_SIBLINGS, '[[]]')); process.exit(0); }
 if (/contents\\/\\.github\\/workflows\\/code-review\\.yml/.test(a)) { if (E.GH_CODEREVIEW === '1') { process.stdout.write('.github/workflows/code-review.yml'); process.exit(0); } die404(); }
 if (/contents\\/AGENTS\\.md/.test(a)) { if (E.GH_AGENTS) { process.stdout.write(Buffer.from(E.GH_AGENTS).toString('base64')); process.exit(0); } die404(); }
-if (/^api graphql/.test(a)) { process.stdout.write(j(E.GH_THREADS, '{"total":0,"unresolved":0}')); process.exit(0); }
+if (/^api graphql/.test(a)) { process.stdout.write(j(E.GH_THREADS, '{"total":0,"unresolvedCodex":0,"unresolvedClaude":0,"escalated":0}')); process.exit(0); }
 if (/commits\\//.test(a)) { process.stdout.write(j(E.GH_COMMIT_DATE, '2020-01-01T00:00:00Z')); process.exit(0); }
 die404();
 `);
@@ -52,6 +54,7 @@ const run = (command, cwd = repoFeat, extra = {}) => {
       GH_FILES: extra.files || '', GH_REVIEWS: extra.reviews || '', GH_COMMENTS: extra.comments || '',
       GH_REACTIONS: extra.reactions || '', GH_CODEREVIEW: extra.codereview || '', GH_AGENTS: extra.agents || '',
       GH_THREADS: extra.threads || '', GH_COMMIT_DATE: extra.commitDate || '',
+      GH_TIMELINE: extra.timeline || '', GH_SIBLINGS: extra.siblings || '',
     },
   });
   let decision = 'none', reason = '';
@@ -135,7 +138,10 @@ t('workflow-only self-edit is not denied here', 'gh pr merge 5', 'ask',
 
 // ---- reviewer-state matrix (the gate's actual job, not just parsing) ----
 const CODEX = 'chatgpt-codex-connector[bot]';
-const revClaude = (state) => `[[{"user":{"login":"claude[bot]"},"state":"${state}","commit_id":"${HEAD}"}]]`;
+// Reviews carry submitted_at (2021-06) so the base-retarget cutoff filter keeps them.
+const revClaude = (state) => `[[{"user":{"login":"claude[bot]"},"state":"${state}","commit_id":"${HEAD}","submitted_at":"2021-06-01T00:00:00Z"}]]`;
+const THREADS_CLEAN = '{"total":1,"unresolvedCodex":0,"unresolvedClaude":0,"escalated":0}';
+const codexClean = (created = '2021-06-01T00:00:00Z') => `[[{"user":{"login":"${CODEX}"},"body":"I didn't find any major issues. ${HEAD}","created_at":"${created}"}]]`;
 const AGENTS_RULES = '## Code Review Rules\nbe strict';
 // Claude leg (code-review.yml present on default branch):
 t('claude configured, never reviewed → deny', 'gh pr merge 5', 'deny', { codereview: '1' });
@@ -144,18 +150,46 @@ t('claude CHANGES_REQUESTED on head → deny', 'gh pr merge 5', 'deny',
 t('claude APPROVED on head → pass (ask)', 'gh pr merge 5', 'ask',
   { codereview: '1', reviews: revClaude('APPROVED') });
 t('claude APPROVED but on OLD head → deny', 'gh pr merge 5', 'deny',
-  { codereview: '1', reviews: `[[{"user":{"login":"claude[bot]"},"state":"APPROVED","commit_id":"0000000000000000000000000000000000000000"}]]` });
+  { codereview: '1', reviews: `[[{"user":{"login":"claude[bot]"},"state":"APPROVED","commit_id":"0000000000000000000000000000000000000000","submitted_at":"2021-06-01T00:00:00Z"}]]` });
 // Codex leg (AGENTS.md § Code Review Rules):
 t('codex configured, never touched → deny', 'gh pr merge 5', 'deny', { agents: AGENTS_RULES });
 t('codex unresolved thread → deny', 'gh pr merge 5', 'deny',
-  { agents: AGENTS_RULES, comments: `[[{"user":{"login":"${CODEX}"},"body":"looked"}]]`, threads: '{"total":1,"unresolved":1}' });
+  { agents: AGENTS_RULES, comments: `[[{"user":{"login":"${CODEX}"},"body":"looked"}]]`, threads: '{"total":1,"unresolvedCodex":1,"unresolvedClaude":0,"escalated":0}' });
 t('codex clean comment naming head → pass (ask)', 'gh pr merge 5', 'ask',
-  { agents: AGENTS_RULES, comments: `[[{"user":{"login":"${CODEX}"},"body":"I didn't find any major issues. ${HEAD}"}]]`, threads: '{"total":1,"unresolved":0}' });
+  { agents: AGENTS_RULES, comments: codexClean(), threads: THREADS_CLEAN });
 t('generic AGENTS.md (no rules section) → no codex leg → ask', 'gh pr merge 5', 'ask',
   { agents: '# Project\nsome briefing' });
 // A Codex onboarding notice is NOT review activity — no Codex leg, no config → ask.
 t('codex setup-notice only (not configured) → no codex leg → ask', 'gh pr merge 5', 'ask',
   { comments: `[[{"user":{"login":"${CODEX}"},"body":"To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments)."}]]` });
+
+// ---- PARITY rules ported from the CI twin merge-gate.yml (2026-07-13) ----
+// 3: unresolved Claude-rooted thread blocks even with an APPROVED verdict.
+t('claude APPROVED but unresolved Claude thread → deny', 'gh pr merge 5', 'deny',
+  { codereview: '1', reviews: revClaude('APPROVED'), threads: '{"total":1,"unresolvedCodex":0,"unresolvedClaude":1,"escalated":0}' });
+// 4: an escalated-to-human thread blocks whichever leg is active.
+t('escalated-to-human thread → deny', 'gh pr merge 5', 'deny',
+  { codereview: '1', reviews: revClaude('APPROVED'), threads: '{"total":1,"unresolvedCodex":0,"unresolvedClaude":0,"escalated":1}' });
+// 1: a Claude APPROVED that PREDATES the last base retarget no longer counts.
+t('claude APPROVED before base retarget → deny', 'gh pr merge 5', 'deny',
+  { codereview: '1', reviews: revClaude('APPROVED'),
+    timeline: '[[{"event":"base_ref_changed","created_at":"2021-07-01T00:00:00Z"}]]' });
+// 2: a Codex clean comment PREDATING the retarget no longer counts.
+t('codex clean before base retarget → deny', 'gh pr merge 5', 'deny',
+  { agents: AGENTS_RULES, comments: codexClean('2021-06-01T00:00:00Z'), threads: THREADS_CLEAN,
+    timeline: '[[{"event":"base_ref_changed","created_at":"2021-07-01T00:00:00Z"}]]' });
+// 2: a later Codex non-clean comment supersedes an earlier clean (chronology cutoff).
+t('codex clean then later finding comment → deny', 'gh pr merge 5', 'deny',
+  { agents: AGENTS_RULES, threads: THREADS_CLEAN,
+    comments: `[[{"user":{"login":"${CODEX}"},"body":"I didn't find any major issues. ${HEAD}","created_at":"2021-06-01T00:00:00Z"},{"user":{"login":"${CODEX}"},"body":"actually a bug here","created_at":"2021-06-02T00:00:00Z"}]]` });
+// 5: a second open PR sharing this exact head commit → fail closed.
+t('sibling PR sharing head commit → deny', 'gh pr merge 5', 'deny',
+  { codereview: '1', reviews: revClaude('APPROVED'),
+    siblings: `[[{"number":9,"state":"open","head":{"sha":"${HEAD}"}}]]` });
+// 5: a stacked PR (commit is an ANCESTOR, different head) does NOT collide.
+t('stacked PR (commit is ancestor, different head) → pass (ask)', 'gh pr merge 5', 'ask',
+  { codereview: '1', reviews: revClaude('APPROVED'),
+    siblings: `[[{"number":9,"state":"open","head":{"sha":"0000000000000000000000000000000000000000"}}]]` });
 
 // ---- heredoc data stays data ----
 t('doc heredoc mentioning merge', `cat > notes.md <<'EOF'\nrun gh pr merge 5 to merge\nEOF`, 'none');
