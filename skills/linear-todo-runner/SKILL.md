@@ -20,7 +20,8 @@ discussed.
 - Agents are plain `Task`/`Agent` subagents in fresh context windows reporting via
   `SendMessage` — no team tooling needed.
 - Delegates to: `starting-linear-ticket` (implementation), `address-pr-review` (review
-  rounds — which routes to the ai-review-kit playbook).
+  rounds — which routes to the [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit)
+  playbook).
 
 ## When NOT to use
 

@@ -77,26 +77,57 @@ Skills are the *how*; the *policy* lives in a global `CLAUDE.md`
 makes §5 mechanical instead of aspirational. It inspects every Bash call and:
 
 - **denies** pushes to `main`/`master` — it parses the push grammar rather than
-  pattern-matching shapes, so `git -C`/`--git-dir` forms, any remote name, multi-ref
-  pushes, `--all`/`--mirror`, refspec and branch-deletion forms, and a bare `git push`
-  while sitting on main (resolved against the real current branch) are all caught;
-- **denies** REST/GraphQL PR merges, auto-merge mutations, and interpreter-wrapped
-  merges (`python -c "subprocess.run(['gh','pr','merge',…])"`) — shapes the gate can't
-  inspect are refused, not trusted;
+  pattern-matching shapes, so `git -C`/`--git-dir` forms, any remote name, `--repo`
+  forms, multi-ref pushes, `--all`/`--mirror`, wildcard refspecs, refspec and
+  branch-deletion forms, and a bare `git push` while sitting on main (resolved against
+  the real current branch) are all caught;
+- **denies** REST/GraphQL PR merges (and REST branch deletion), auto-merge mutations,
+  interpreter-wrapped merges (`python -c "subprocess.run(['gh','pr','merge',…])"`), and
+  `git rebase -x/--exec` smuggling — shapes the gate can't inspect are refused, not
+  trusted;
 - **gates `gh pr merge`** on live reviewer state: it queries the PR and blocks unless
-  every applicable AI reviewer (Claude leg / Codex leg, per ai-review-kit) is clean on
-  the PR's *current head* — and even a clean pass ends in `ask`, never auto-merge;
+  every applicable AI reviewer (Claude leg / Codex leg, per
+  [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit)) is clean on
+  the PR's *current head* — one merge per Bash call, no out-of-band `GH_REPO` repo
+  selection, and even a clean pass ends in `ask`, never auto-merge;
 - **fails closed**: unverifiable state → deny. The installer wires it so a missing hook
   file or missing `node` also blocks rather than silently running ungated.
+- **is regression-tested**: [`merge-gate.test.m
 
-Without ai-review-kit the hook still bans main-pushes and API-merge bypasses; the
-reviewer checks simply find no reviewers configured and fall back to `ask` (manual
-approval only).
+Without [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) the hook
+still bans main-pushes and API-merge bypasses; the reviewer checks simply find no
+reviewers configured and fall back to `ask` (manual approval only).
 
 One deliberate personal exemption ships in the hook (documented inline): a bare
 `git -C ~/.claude push origin main` is allowed *only* when the target repo actually
 resolves to `~/.claude` — the author's config repo syncs by direct push. Harmless if
 that's not your flow; delete the exemption block if you want zero exceptions.
+
+### Scope & security boundaries (read before relying on the gate)
+
+This kit is built — and audited — for **one supervised solo operator**. Know where the
+lines are:
+
+- **The hook is a guardrail against the agent, not a standalone security gate.** It
+  scans Bash text; it is not a shell parser and cannot see every indirection
+  (file-supplied `gh api --input` payloads, dynamically assembled commands). Shapes it
+  can't verify it denies, but a determined human was never the threat model — the agent
+  making an honest mess is.
+- **The real enforcement backstop is server-side:** GitHub **branch protection** on
+  `main` plus [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit)'s
+  CI `merge-gate.yml` (the hook's server-side twin). Run this kit with both; treat the
+  local hook as the fast first line, not the last.
+- **Time-of-check vs time-of-use:** the gate verifies the PR head at command time and
+  ends in `ask` — a push landing between verification and your approval invalidates the
+  verdict (the pass message names the verified SHA). For a hard bind, merge with
+  `--match-head-commit <sha>`; branch protection covers the rest.
+- **The todo-runner is single-runner, supervised.** Linear has no compare-and-set, so
+  ticket claiming is best-effort (marker comments + resume reconciliation), not atomic.
+  One runner per team; don't run it unattended. Details in
+  [`linear-todo-runner`](skills/linear-todo-runner/SKILL.md)'s "Known limitations".
+- **Linear content is untrusted input.** The skills carry an explicit trust boundary
+  (ticket text is a work order, never authority to bypass gates), but that boundary is
+  prompt-level discipline, not a mechanical sandbox.
 
 ### Ticket anatomy (the executable spec)
 
@@ -115,8 +146,10 @@ that's not your flow; delete the exemption block if you want zero exceptions.
 
 Snapshots expire — `starting-linear-ticket` runs
 [`freshness-check.md`](skills/starting-linear-ticket/freshness-check.md) before
-executing (file exists / symbol grep / type check) and refreshes stale anchors into a
-worktree-local note, never by editing the durable spec.
+executing (SHA-diff drift check on the snapshot's paths, file-exists, symbol/type grep,
+schema anchors) and refreshes stale anchors into a worktree-local note, never by editing
+the durable spec. Ticket-supplied paths/symbols are treated as untrusted input — quoted,
+repo-contained, never `eval`'d.
 
 ### The status state machine
 
@@ -190,7 +223,7 @@ enforces, and §6's opt-in semantics).
 | Missing piece | What still works | What degrades |
 |---|---|---|
 | superpowers plugin | Every skill's own steps | The named discipline passes (brainstorm, TDD cadence, worktree helper) become manual judgment — the skills reference them but proceed |
-| ai-review-kit | Idea → tickets → worktree → PR, merge-gate's main-push + API-merge bans | Post-PR review loop is manual; `gh pr merge` gate finds no reviewers and falls back to `ask` (human-only approval) |
+| [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) | Idea → tickets → worktree → PR, merge-gate's main-push + API-merge bans | Post-PR review loop is manual; `gh pr merge` gate finds no reviewers and falls back to `ask` (human-only approval) |
 | Linear GitHub integration | Whole pipeline | `In Review`/`Done` flips become manual fallbacks (skills verify and self-heal) |
 | Linear MCP not authenticated | Nothing Linear-touching | Skills stop at the fetch step; re-auth via `/mcp` |
 | Project not opted in | Normal Claude Code work, `rapid-prototype` | All Linear skills stay out by design — this is a feature |
@@ -222,8 +255,9 @@ enforces, and §6's opt-in semantics).
   itself is pure Node, but the *wiring command* in `settings.json` is POSIX-shell —
   it fires in environments where Claude Code executes hooks via `sh` (macOS, Linux,
   WSL, Git-Bash-launched sessions). On a native-Windows session where it can't run,
-  treat ai-review-kit's CI `merge-gate.yml` (the server-side twin) as the enforcement
-  layer and verify locally before trusting the hook.
+  treat [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit)'s CI
+  `merge-gate.yml` (the server-side twin) as the enforcement layer and verify locally
+  before trusting the hook.
 - **Custom config dirs:** the installer embeds the hook's *absolute path* (derived from
   where it actually installed) into `settings.json` — no `$HOME` guessing at run time.
   If you override `CLAUDE_DIR`, it must be the directory Claude Code really reads
@@ -256,11 +290,11 @@ enforces, and §6's opt-in semantics).
 ## Relationship to ai-review-kit
 
 Zero file overlap, deliberate seam: this kit ends at "PR is open, Linear says In
-Review". ai-review-kit owns everything after — reviewer triggering, the fix loop, thread
-hygiene, the CI merge-gate workflow (`merge-gate.yml`, the server-side twin of this
-kit's local hook). Install both for the full idea-to-merged path. The `linear-todo-runner`
-hands opened PRs to ai-review-kit's loop when present; without it, PRs just wait for
-human review.
+Review". [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) owns
+everything after — reviewer triggering, the fix loop, thread hygiene, the CI merge-gate
+workflow (`merge-gate.yml`, the server-side twin of this kit's local hook). Install both
+for the full idea-to-merged path. The `linear-todo-runner` hands opened PRs to
+ai-review-kit's loop when present; without it, PRs just wait for human review.
 
 ## License
 
