@@ -28,6 +28,10 @@ carrying their own copies — edit THIS file, never re-inline the note.
   (filter by `parentId`, `state`, `project`, …),
   `get_project`, `list_projects`, `list_teams`, `list_issue_statuses`, `list_issue_labels`,
   `list_comments`, `list_milestones`, `get_milestone`.
+- **Retries after a timeout must check first.** The `save_*` tools are not idempotent on
+  create (no `id` → every call creates). If a create times out or errors ambiguously,
+  `list_issues {query: <title>}` (or `list_projects`/`list_comments`) BEFORE retrying —
+  the write may have landed; retry-with-id (update) instead of re-creating a duplicate.
 - **Team is never hardcoded.** Read the team from the project's `.claude/CLAUDE.md` and confirm it
   (via `list_teams`) before any `save_issue`/`save_project`. No team declared = the project has NOT
   opted into Linear — don't write.

@@ -5,6 +5,7 @@
 // .github/ai-review-loop.md) — step 5, "each leg has its own CLEAN artifact".
 // Fail-closed: unverifiable state → deny. Best-effort layer — the CI merge-gate status
 // (the kit's workflows/merge-gate.yml) is the server-side twin; web UI = human override.
+// Regression tests: merge-gate.test.mjs (plain node, no network) — run it after edits.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +20,7 @@ const out = (decision, reason) => {
 let input = {};
 try { input = JSON.parse(readFileSync(0, 'utf8')); } catch { /* fall through */ }
 const rawCmd = input?.tool_input?.command ?? '';
+const HOME = process.env.HOME || '';
 
 // Strip heredoc bodies fed to NON-shell consumers (python3 - <<EOF ... writing docs that
 // merely mention merging) — that text is data, not commands. Heredocs feeding a shell
@@ -40,15 +42,21 @@ const cmd = stripDataHeredocs(rawCmd);
 // is the command verb, so: split into shell segments (quote-aware — operators inside
 // quotes don't split), then DROP segments whose leading verb can't merge. What's left is
 // scanned with quotes intact, so a real gh-api payload survives while a commit message
-// doesn't. Selector parsing uses `scan` too — a safe-lead segment quoting "gh pr merge N"
-// must not hijack which PR gets verified.
+// doesn't. Command substitution — backticks anywhere, `$(`/`(` outside single quotes —
+// ALWAYS starts a new segment: `echo "$(gh pr merge 5)"` executes the inner command
+// before echo ever runs, so it must not hide behind echo's safe lead (audit 2026-07-13).
 const splitSegments = (s) => {
   const segs = []; let cur = '', q = null;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
-    if (q) { cur += c; if (c === q) q = null; continue; }
+    if (q === "'") { cur += c; if (c === q) q = null; continue; }
+    if (q === '"') {
+      if (c === '"') { cur += c; q = null; continue; }
+      if (c === '`' || (c === '$' && s[i + 1] === '(')) { segs.push(cur); cur = ''; if (c === '$') i++; continue; }
+      cur += c; continue;
+    }
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
-    if (c === ';' || c === '(' || c === ')' || c === '\n'
+    if (c === ';' || c === '(' || c === ')' || c === '`' || c === '\n'
       || (c === '&' && s[i + 1] === '&') || (c === '|' && s[i + 1] === '|')) {
       segs.push(cur); cur = ''; if (s[i + 1] === c) i++; continue;
     }
@@ -61,9 +69,12 @@ const splitSegments = (s) => {
 // Leading verbs that can never merge a PR — their args (incl. our own commit messages,
 // echoed docs) are inert. `git` is split: `git commit`/`add`/etc. are safe, `git push` is NOT.
 // node/python are NOT safe leads — `-e`/`-c` execute their args (child_process.execSync
-// can merge). Adversarial finding 2026-07-07.
-const SAFE_LEAD = /^\s*(?:sudo\s+|env\s+\S+=\S*\s+)*(?:git\s+(?:commit|add|status|log|diff|show|stash|checkout|switch|restore|worktree|fetch|pull|rebase|reset|tag|branch|config)|echo|printf|cat|tee|:|true|jq|sed|awk|grep|rg|ls|cd|mkdir|touch|cp|mv|export)\b/;
-const scan = splitSegments(cmd).filter((seg) => !SAFE_LEAD.test(seg)).join(' ; ');
+// can merge). Adversarial finding 2026-07-07. NOT safe either (audit 2026-07-13):
+// awk (system() executes), sed (GNU `e` command executes), git config (alias definitions
+// smuggle commands — and keeping config visible lets the merge/push rules read the alias body).
+const SAFE_LEAD = /^\s*(?:sudo\s+|env\s+\S+=\S*\s+)*(?:git\s+(?:commit|add|status|log|diff|show|stash|checkout|switch|restore|worktree|fetch|pull|rebase|reset|tag|branch)|echo|printf|cat|tee|:|true|jq|grep|rg|ls|cd|mkdir|touch|cp|mv|export)\b/;
+const scanSegs = splitSegments(cmd).filter((seg) => !SAFE_LEAD.test(seg));
+const scan = scanSegs.join(' ; ');
 
 // ---- Merge shapes that are NEVER allowed for the agent (no PR-state check needed) ----
 if (/\bgh\s+api\b[^;&|]*\/merge\b/.test(scan) || /mergePullRequest|PullRequestAutoMerge/.test(scan)) {
@@ -73,26 +84,75 @@ if (/\bgh\s+api\b[^;&|]*\/merge\b/.test(scan) || /mergePullRequest|PullRequestAu
 if (/\/pulls\/\d+\/merge\b/.test(scan)) {
   out('deny', 'merge-gate: direct call to the pulls/<n>/merge endpoint bypasses the gate — use `gh pr merge` or the web UI');
 }
-// Branch deletion is push-to-main-class destructive. REST DELETE forms are denied at the
-// settings layer (deny rules); the GraphQL deleteRef mutation has no legitimate agent use
-// in this setup — deny outright (found 2026-07-07: `gh api graphql *` is allowlisted).
+// Branch deletion is push-to-main-class destructive. Both API forms are denied HERE —
+// the GraphQL deleteRef mutation (found 2026-07-07: `gh api graphql *` is allowlisted)
+// and the REST DELETE /git/refs form (audit 2026-07-13: the installer provisions no
+// settings-layer deny rule, so the hook can't assume one).
 if (/\bgh\s+api\b/.test(scan) && /\bdeleteRef\b/.test(scan)) {
   out('deny', 'merge-gate: deleteRef mutation deletes branches — no agent use here; delete branches via the web UI or ask the user');
 }
+if (/\bgh\s+api\b/.test(scan) && /(?:^|\s)(?:-X|--method)[=\s]*DELETE\b/i.test(scan) && /\/git\/refs\//.test(scan)) {
+  out('deny', 'merge-gate: REST branch deletion (DELETE git/refs) — delete branches via the web UI or ask the user');
+}
 // Interpreter/exec smuggling: argv arrays (subprocess.run(['gh','pr','merge',…]),
-// execFileSync('gh',['pr','merge'])) never form the contiguous strings the rules above
-// match. A wrapped merge/push can't be verified through a wrapper — deny and demand the
-// direct command, which the gate CAN inspect.
-const EXEC_SMUGGLE = /\b(?:node|python3?|ruby|perl|deno|bun)\b[^\n;&|]*\s-{1,2}(?:e|c|eval|p)\b|subprocess|child_process|exec\w*\s*\(|spawnSync|os\.system|popen/i;
+// execFileSync('gh',['pr','merge']), awk system()) never form the contiguous strings the
+// rules above match. A wrapped merge/push can't be verified through a wrapper — deny and
+// demand the direct command, which the gate CAN inspect.
+const EXEC_SMUGGLE = /\b(?:node|python3?|ruby|perl|deno|bun)\b[^\n;&|]*\s-{1,2}(?:e|c|eval|p)\b|subprocess|child_process|exec\w*\s*\(|spawnSync|os\.system|\bsystem\s*\(|popen/i;
 if (EXEC_SMUGGLE.test(scan) && /\b(?:gh|git)\b/.test(scan) && /\b(?:merge|push)\b/.test(scan)) {
   out('deny', 'merge-gate: inline interpreter/exec code referencing gh/git merge|push cannot be verified through a wrapper — run the command directly (gh pr merge / git push) so the gate can inspect it');
 }
-// `git -C <path> push` / `git -c k=v push` etc. must match too — a contiguous-only
-// `git push` regex let -C forms push main anywhere (found testing the exemption below).
-// `--delete`/`-d` may sit BETWEEN remote and ref (`git push origin --delete main` deletes
-// remote main) — without the optional group the adjacency requirement let it through
-// while `Bash(git push origin *)` allowlisted it (found 2026-07-07).
-if (/\bgit\s+(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)\s+|-c\s+\S+\s+|--git-dir[=\s]\S+\s+|--work-tree[=\s]\S+\s+)*push\b[^;&|]*(\s(?:origin|upstream)\s+(?:--delete\s+|-d\s+)?\+?(?:refs\/heads\/)?(?:main|master)\b|:(?:refs\/heads\/)?(?:main|master)(\s|$))/.test(scan)) {
+
+// ---- git push: parse the push grammar per segment instead of pattern-matching shapes.
+// The old two-remote regex missed alternate remote names, multi-ref pushes, --all/--mirror,
+// and bare `git push` while sitting on main (audit 2026-07-13). Deny any push whose target
+// ref set can touch main/master; a push whose target can't be resolved fails closed.
+const isMain = (ref) => /^(?:refs\/heads\/)?(?:main|master)$/.test(ref.replace(/^\+/, ''));
+const pushProblem = (seg) => {
+  const gi = seg.search(/\bgit\b/);
+  if (gi < 0) return null;
+  const toks = seg.slice(gi).split(/\s+/).filter(Boolean);
+  const GIT_VAL = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+  let i = 1; let cdir = null;
+  while (i < toks.length && toks[i].startsWith('-')) {
+    if (toks[i] === '-C') cdir = toks[i + 1];
+    i += GIT_VAL.has(toks[i]) ? 2 : 1;
+  }
+  if (toks[i] !== 'push') return null;
+  const PUSH_VAL = new Set(['--receive-pack', '--repo', '--exec', '-o', '--push-option']);
+  let del = false; const pos = [];
+  for (i += 1; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === '--delete' || t === '-d') { del = true; continue; }
+    if (t === '--all' || t === '--mirror' || t === '--branches') return `${t} pushes every branch, including main/master`;
+    if (/^\d*[<>]/.test(t)) continue; // redirections are not refs
+    if (t.startsWith('-')) { if (PUSH_VAL.has(t)) i++; continue; }
+    pos.push(t.replace(/^['"]|['"]$/g, ''));
+  }
+  const refs = pos.slice(1); // pos[0] = remote (any name — never assume origin/upstream)
+  let needBranch = refs.length === 0; // bare push targets the CURRENT branch
+  for (const r of refs) {
+    const dst = (del || !r.includes(':')) ? r : r.slice(r.indexOf(':') + 1);
+    if (isMain(dst)) return `\`${r}\` targets main/master`;
+    if (/^\+?HEAD$/.test(dst)) needBranch = true; // HEAD refspec = current branch too
+  }
+  if (needBranch) {
+    try {
+      const dir = cdir
+        ? cdir.replace(/^['"]|['"]$/g, '').replace(/^~(?=\/|$)/, HOME)
+        : (input?.cwd || process.cwd());
+      const br = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'],
+        { cwd: dir, encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      if (/^(?:main|master)$/.test(br)) return 'the current branch is main/master';
+    } catch {
+      return 'the push target branch cannot be resolved — push an explicit feature branch (git push <remote> <branch>)';
+    }
+  }
+  return null;
+};
+let pushWhy = null;
+for (const seg of scanSegs) { pushWhy = pushProblem(seg); if (pushWhy) break; }
+if (pushWhy) {
   // EXEMPTION (user-approved 2026-07-07): the ~/.claude config repo syncs by direct
   // push to main — its README's documented flow. Allowed ONLY when the command is a
   // single bare push (an 'allow' covers the whole Bash call, so no riders) and the
@@ -102,7 +162,6 @@ if (/\bgit\s+(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)\s+|-c\s+\S+\s+|--git-dir[=\s]\S+\s+
     const segs = splitSegments(cmd).map((s) => s.trim()).filter(Boolean);
     const one = segs.length === 1 && segs[0].match(/^git\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?push(?:\s+(?:origin|upstream)\s+(?:main|master))?\s*$/);
     if (one) {
-      const HOME = process.env.HOME || '';
       let dir = one[1] ? one[1].replace(/^['"]|['"]$/g, '') : (input?.cwd || process.cwd());
       dir = dir.replace(/^~(?=\/|$)/, HOME);
       const top = execFileSync('git', ['rev-parse', '--show-toplevel'],
@@ -112,18 +171,31 @@ if (/\bgit\s+(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)\s+|-c\s+\S+\s+|--git-dir[=\s]\S+\s+
       }
     }
   } catch { /* can't prove it's the config repo → treat as any other push */ }
-  out('deny', 'merge-gate: pushing to main/master is banned (global CLAUDE.md §5 — worktree + PR only)');
+  out('deny', `merge-gate: pushing to main/master is banned (global CLAUDE.md §5 — worktree + PR only): ${pushWhy}`);
 }
 
 // ---- gh pr merge, matched ANYWHERE (wrappers like bash -c, xargs, subshells included;
-// unprovable position counts as gated, per adversarial review 2026-07-07) ----
-if (!/\bgh\s+pr\s+merge\b/.test(scan)) process.exit(0); // no opinion — normal permission flow
-if (/\bgh\s+pr\s+merge\s+(-h|--help)\b/.test(scan)) out('allow', 'merge-gate: --help only');
-// Selector: parse from the LAST occurrence in scan — safe-lead segments (commit messages,
-// echoed prose) are dropped there, so a quoted "gh pr merge N" can't point the check at
-// the wrong PR (fixed 2026-07-07; was parsed from cmd).
-const merges = [...scan.matchAll(/\bgh\s+pr\s+merge\b/g)];
-const m = merges[merges.length - 1];
+// unprovable position counts as gated, per adversarial review 2026-07-07). `-R owner/repo`
+// is valid BEFORE the subcommand too (`gh -R o/r pr merge`) — match both placements. ----
+const MERGE_RE = /\bgh\s+(?:(?:-R|--repo)[=\s]+(?:"[^"]*"|'[^']*'|\S+)\s+)?pr\s+merge\b/g;
+const merges = [...scan.matchAll(MERGE_RE)];
+if (!merges.length) process.exit(0); // no opinion — normal permission flow
+// --help is allowed ONLY when every occurrence is help-only — a --help alongside a real
+// merge must not allowlist the whole Bash call (audit 2026-07-13).
+if (merges.every((mm) => /^\s+(?:-h|--help)\b/.test(scan.slice(mm.index + mm[0].length)))) {
+  out('allow', 'merge-gate: --help only');
+}
+// One merge per Bash call — the gate verifies exactly ONE PR and its decision covers the
+// whole call, so a second merge would ride an approval it never earned (audit 2026-07-13).
+if (merges.length > 1) {
+  out('deny', 'merge-gate: multiple `gh pr merge` invocations in one Bash call — run one merge per command so each PR is verified');
+}
+// GH_REPO switches the repo out-of-band of the text the gate parses — the verification
+// would run against the wrong repo. Demand the explicit flag instead.
+if (/\bGH_REPO=/.test(scan)) {
+  out('deny', 'merge-gate: GH_REPO env selects the repository out-of-band — pass -R owner/repo explicitly so the gate verifies the same repo');
+}
+const m = merges[0];
 
 const cwd = input?.cwd || process.cwd();
 const T0 = Date.now();
@@ -133,14 +205,23 @@ const gh = (...args) => {
 };
 
 try {
-  const tail = scan.slice(m.index + m[0].length);
-  // -R/--repo travels to every gh call; selector = first arg right after `merge`, or the
-  // first number/URL anywhere in the tail (handles `gh pr merge --squash 15`).
-  const repoFlag = (tail.match(/(?:^|\s)(?:-R|--repo)[=\s]+([\w.-]+\/[\w.-]+)/) || [])[1] || '';
+  // Tail is bounded to THIS segment — an -R on a later command in the same call must not
+  // hijack which repo gets verified.
+  const tail = scan.slice(m.index + m[0].length).split(' ; ')[0];
+  // -R/--repo travels to every gh call; accept quoted and host-qualified forms.
+  const REPO_RE = /(?:^|\s)(?:-R|--repo)[=\s]+['"]?(?:https?:\/\/)?(?:github\.com\/)?([\w.-]+\/[\w.-]+)/;
+  const repoFlag = ((m[0].match(REPO_RE) || tail.match(REPO_RE) || [])[1]) || '';
   const R = repoFlag ? ['-R', repoFlag] : [];
+  // Selector = first POSITIONAL token: skip flags, and skip the value of value-taking
+  // flags so `-t 123` can't be mistaken for PR #123 (audit 2026-07-13). An unknown
+  // value-flag leaves its value as a bogus selector → gh pr view fails → fail closed.
+  const VAL_FLAGS = /^(?:-t|--subject|-b|--body|-F|--body-file|--match-head-commit|-A|--author-email|-R|--repo)$/;
   const toks = tail.trim().split(/\s+/).filter(Boolean);
-  let sel = toks[0] && !toks[0].startsWith('-') ? toks[0].replace(/^['"]|['"]$/g, '') : '';
-  if (!sel) sel = toks.find((t) => /^\d+$/.test(t) || /^https?:\/\//.test(t)) || '';
+  let sel = '';
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].startsWith('-')) { if (VAL_FLAGS.test(toks[i])) i++; continue; }
+    sel = toks[i].replace(/^['"]|['"]$/g, ''); break;
+  }
 
   const view = JSON.parse(gh('pr', 'view', ...(sel ? [sel] : []), ...R, '--json', 'number,headRefOid,files,url'));
   const num = view.number;
@@ -168,17 +249,20 @@ try {
     || reactions.some((r) => CODEX.test(r.user?.login || ''));
   // Codex "configured" = AGENTS.md CONTAINS the official '## Code Review Rules' section
   // (openai/codex#25738) — NOT bare file presence. Generic AGENTS.md briefings without
-  // the Codex review app would otherwise hard-red the gate forever. 404 = not configured;
-  // any other error throws → fail closed (matches the CI twin's codexCfg).
-  const codexConfigured = () => {
+  // the Codex review app would otherwise hard-red the gate forever. Checked base-OR-head:
+  // a PR that itself adds the Codex config must require the Codex leg (audit 2026-07-13 —
+  // makes the skill's "exactly like the merge-gate's codexCfg probe" claim true).
+  // 404 = not configured; any other error throws → fail closed (matches the CI twin).
+  const agentsHasRules = (ref) => {
     try {
-      const b64 = gh('api', `repos/${repo}/contents/AGENTS.md`, '--jq', '.content');
+      const b64 = gh('api', `repos/${repo}/contents/AGENTS.md${ref ? `?ref=${ref}` : ''}`, '--jq', '.content');
       return /^##\s+Code Review Rules/m.test(Buffer.from(b64, 'base64').toString('utf8'));
     } catch (e) {
       if (/HTTP 404/.test(String(e.stderr || ''))) return false;
       throw e;
     }
   };
+  const codexConfigured = () => agentsHasRules('') || agentsHasRules(head);
   // Config probes only when activity alone doesn't already require the leg.
   const claudeRequired = claudeActive || exists('.github/workflows/code-review.yml');
   const codexRequired = codexActive || codexConfigured();

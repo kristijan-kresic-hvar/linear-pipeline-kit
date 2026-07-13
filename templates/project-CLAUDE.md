@@ -10,11 +10,14 @@ Merges with the global `~/.claude/CLAUDE.md` (guardrails + strict git gate + Lin
 - Project: <Linear project name, if this repo maps to one>
 
 ## Verification Commands
-The Linear pipeline skills (starting-linear-ticket, freshness-check, linear-todo-runner) read these — they assume NO package manager or framework, so fill them in:
-- Dev: <e.g. npm run dev>
+The Linear pipeline skills (starting-linear-ticket, freshness-check, linear-todo-runner) read these — they assume NO package manager or framework, so fill them in. Every command here must RUN TO COMPLETION and exit (the skills execute all of them as a gate):
 - Test: <e.g. npm test>
 - Lint / Typecheck: <e.g. npm run lint && npm run typecheck>
 - Build: <e.g. npm run build>
+- E2E: <e.g. npm run test:e2e — delete this line if the project has none>
+
+## Dev Server (NOT a verification command — long-running)
+- Dev: <e.g. npm run dev> <!-- used for manual testing / E2E server; never run as a completion gate -->
 
 ## Stack
 - Language / framework: <...>

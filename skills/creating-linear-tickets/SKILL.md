@@ -36,7 +36,7 @@ An idea, feature request, bug report, or initiative. Can be:
 - There's no design ambiguity — no "should we do A or B?" questions
 - The user has clearly articulated what they want
 
-**Fast path:** Read the relevant code to understand the current state → create a well-formed ticket with problem statement, affected code, solution sketch, and acceptance criteria. No brainstorming, no scope-cut round, no Eng review.
+**Fast path:** Read the relevant code to understand the current state → create the ticket using the SAME full template below — including the **Verification** block and an **Implementation Snapshot** (run the Step 5a scout, or capture the anchors yourself while reading the code). What the Fast Path skips is the *review ceremony* (brainstorming, scope-cut round, Eng review) — never the sections. A ticket missing Verification or Snapshot gets classified as legacy by `starting-linear-ticket` and re-enters brainstorming there, defeating the Fast Path.
 
 **Examples of fast-path tickets:**
 - "Day boundary uses UTC instead of local time" — it's a bug, the fix is clear
