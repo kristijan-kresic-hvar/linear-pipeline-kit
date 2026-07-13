@@ -153,6 +153,9 @@ t('codex clean comment naming head → pass (ask)', 'gh pr merge 5', 'ask',
   { agents: AGENTS_RULES, comments: `[[{"user":{"login":"${CODEX}"},"body":"I didn't find any major issues. ${HEAD}"}]]`, threads: '{"total":1,"unresolved":0}' });
 t('generic AGENTS.md (no rules section) → no codex leg → ask', 'gh pr merge 5', 'ask',
   { agents: '# Project\nsome briefing' });
+// A Codex onboarding notice is NOT review activity — no Codex leg, no config → ask.
+t('codex setup-notice only (not configured) → no codex leg → ask', 'gh pr merge 5', 'ask',
+  { comments: `[[{"user":{"login":"${CODEX}"},"body":"To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments)."}]]` });
 
 // ---- heredoc data stays data ----
 t('doc heredoc mentioning merge', `cat > notes.md <<'EOF'\nrun gh pr merge 5 to merge\nEOF`, 'none');

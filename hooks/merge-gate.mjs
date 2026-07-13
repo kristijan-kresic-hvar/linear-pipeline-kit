@@ -271,9 +271,15 @@ try {
   const comments = flat(gh('api', '--paginate', '--slurp', `repos/${repo}/issues/${num}/comments`));
   const reactions = flat(gh('api', '--paginate', '--slurp', `repos/${repo}/issues/${num}/reactions`));
 
+  // A Codex ONBOARDING notice ("To use Codex here, create an environment for this
+  // repo") is posted when Codex is NOT set up — it is the opposite of review activity,
+  // yet its bare presence as a Codex comment used to flip codexActive true and demand a
+  // clean signal that can never come (Codex can't review without an environment). Never
+  // count it as activity. (Observed live 2026-07-13 blocking an otherwise-clean PR.)
+  const isCodexSetupNotice = (b) => /to use codex here|create an environment for this repo/i.test(b || '');
   const claudeActive = reviews.some((r) => r.user?.login === 'claude[bot]');
   const codexActive = reviews.some((r) => CODEX.test(r.user?.login || ''))
-    || comments.some((c) => CODEX.test(c.user?.login || ''))
+    || comments.some((c) => CODEX.test(c.user?.login || '') && !isCodexSetupNotice(c.body))
     || reactions.some((r) => CODEX.test(r.user?.login || ''));
   // Codex "configured" = AGENTS.md CONTAINS the official '## Code Review Rules' section
   // (openai/codex#25738) — NOT bare file presence. Generic AGENTS.md briefings without
