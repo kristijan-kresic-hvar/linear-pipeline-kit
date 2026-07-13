@@ -8,6 +8,16 @@ These probes are framework-agnostic: they rely on file-existence checks, symbol 
 
 For each entry in the ticket's Implementation Snapshot:
 
+### 0. Anything moved under the snapshot since capture?
+
+The snapshot header carries the SHA it was captured at. Diff it against HEAD, limited to the snapshot's own paths:
+
+```bash
+git diff --name-only <snapshot-SHA>..HEAD -- <each path from "Files to modify"/"Patterns to follow">
+```
+
+Any hit → **WARN**: the anchors may still grep clean while their semantics changed (renamed params, new call contract). Read the diff for the touched file before trusting its anchor. (If the SHA is unknown to this clone — shallow clone, rebase — skip this probe; the per-anchor probes below still run.)
+
 ### 1. Files exist
 
 For every path under "Files to modify" and "Files to create":
@@ -46,7 +56,7 @@ rg -n "<table>|<column>" <repo-root>/<schema-or-migrations-dir> >/dev/null \
   || echo "STALE: schema anchor <table>.<column> not found"
 ```
 
-If the project exposes a live schema, you can also query it directly. (Example: if the project uses Supabase/Postgres, query `information_schema.columns`; adapt to the project's stack — ORM model files, a `schema.prisma`, SQL migrations, etc.) As a final confirmation, run the ticket's **Post-Merge Verification** commands, which encode the project-specific way to assert the data model is intact.
+If the project exposes a live schema, you can also query it directly. (Example: if the project uses Supabase/Postgres, query `information_schema.columns`; adapt to the project's stack — ORM model files, a `schema.prisma`, SQL migrations, etc.) As a final confirmation, run the subset of the ticket's **Post-Merge Verification** commands that assert *already-existing* state (schema/data anchors) — NOT the ones that assert the ticket's new behavior, which fail by definition until it's implemented.
 
 Empty / no-match result → stale. The column or table was dropped or renamed.
 

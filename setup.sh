@@ -44,6 +44,12 @@ mklink() {
 # dest differs / is a foreign or dangling symlink: skip unless --force.
 install_item() {
   local src="$1" dest="$2" name="$3"
+  # dest IS the source (CLAUDE_DIR pointed into the kit): rm+link here would delete the
+  # kit's own files and leave a self-referential dangling link. Never touch it.
+  if [ -e "$dest" ] && [ ! -L "$dest" ] && [ "$dest" -ef "$src" ]; then
+    echo "  ! $name: destination IS the kit source ($src) — skipping (check CLAUDE_DIR)"
+    return
+  fi
   if [ -L "$dest" ]; then
     if [ "$(readlink "$dest")" = "$src" ]; then
       if [ "$LINK" = 1 ]; then echo "  = $name (already linked)"; return; fi
@@ -98,8 +104,11 @@ const fs = require('fs');
 const path = require('path');
 const sp = path.resolve(process.argv[2]);
 const hook = path.join(path.dirname(sp), 'hooks', 'merge-gate.mjs');
-const CMD = `IN=$(cat); command -v node >/dev/null 2>&1 || { echo 'merge-gate: node not found on PATH — blocking' >&2; exit 2; }; [ -f "${hook}" ] || { echo 'merge-gate: hook file missing — blocking' >&2; exit 2; }; printf %s "$IN" | node "${hook}"`;
 const bail = (why) => { console.log(`  ! ${why} — refusing to touch it. Wire the hook by hand (see README).`); process.exit(0); };
+// The hook path is embedded inside a double-quoted shell string below — a path carrying
+// shell metacharacters would break out of it. Bail rather than write a mangled command.
+if (/["'$\\\x60\n]/.test(hook)) bail(`hook path ${hook} contains shell metacharacters`);
+const CMD = `IN=$(cat); command -v node >/dev/null 2>&1 || { echo 'merge-gate: node not found on PATH — blocking' >&2; exit 2; }; [ -f "${hook}" ] || { echo 'merge-gate: hook file missing — blocking' >&2; exit 2; }; printf %s "$IN" | node "${hook}"`;
 let s = {};
 if (fs.existsSync(sp)) {
   try { s = JSON.parse(fs.readFileSync(sp, 'utf8')); }
@@ -110,14 +119,29 @@ if (s.hooks == null) s.hooks = {};
 if (typeof s.hooks !== 'object' || Array.isArray(s.hooks)) bail(`${sp}: "hooks" is not an object`);
 if (s.hooks.PreToolUse == null) s.hooks.PreToolUse = [];
 if (!Array.isArray(s.hooks.PreToolUse)) bail(`${sp}: "hooks.PreToolUse" is not an array`);
-const wired = s.hooks.PreToolUse.some(e => (Array.isArray(e?.hooks) ? e.hooks : []).some(h => (h?.command || '').includes('merge-gate.mjs')));
-if (wired) { console.log('  = merge-gate already wired in settings.json'); process.exit(0); }
-s.hooks.PreToolUse.push({
-  matcher: 'Bash',
-  hooks: [{ type: 'command', command: CMD, timeout: 45, statusMessage: 'merge-gate: verifying reviewer approvals' }],
-});
+// "Wired" = a command referencing THIS install's absolute hook path — a bare filename
+// match would bless stale wirings from an old CLAUDE_DIR. Stale merge-gate entries
+// (mention the filename, wrong path) are dropped first so re-running after a move
+// migrates instead of stacking a dead fail-closed hook on top of the live one.
+let dropped = 0;
+for (const e of s.hooks.PreToolUse) {
+  if (!Array.isArray(e?.hooks)) continue;
+  const n = e.hooks.length;
+  e.hooks = e.hooks.filter(h => !((h?.command || '').includes('merge-gate.mjs') && !(h?.command || '').includes(hook)));
+  dropped += n - e.hooks.length;
+}
+s.hooks.PreToolUse = s.hooks.PreToolUse.filter(e => !Array.isArray(e?.hooks) || e.hooks.length > 0);
+if (dropped) console.log(`  ~ removed ${dropped} stale merge-gate wiring(s) pointing at an old path`);
+const wired = s.hooks.PreToolUse.some(e => (Array.isArray(e?.hooks) ? e.hooks : []).some(h => (h?.command || '').includes(hook)));
+if (wired && !dropped) { console.log('  = merge-gate already wired in settings.json'); process.exit(0); }
+if (!wired) {
+  s.hooks.PreToolUse.push({
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: CMD, timeout: 45, statusMessage: 'merge-gate: verifying reviewer approvals' }],
+  });
+}
 fs.writeFileSync(sp, JSON.stringify(s, null, 2) + '\n');
-console.log('  + merge-gate wired into settings.json (PreToolUse / Bash)');
+console.log(wired ? '  = merge-gate wiring refreshed' : '  + merge-gate wired into settings.json (PreToolUse / Bash)');
 EOF
 
 # Global CLAUDE.md: the workflow's rules live there (§4 goal-driven, §5 git gate,
