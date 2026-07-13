@@ -10,14 +10,16 @@ Merges with the global `~/.claude/CLAUDE.md` (guardrails + strict git gate + Lin
 - Project: <Linear project name, if this repo maps to one>
 
 ## Verification Commands
-The Linear pipeline skills (starting-linear-ticket, freshness-check, linear-todo-runner) read these — they assume NO package manager or framework, so fill them in. Every command here must RUN TO COMPLETION and exit (the skills execute all of them as a gate):
-- Test: <e.g. npm test>
+The Linear pipeline skills (starting-linear-ticket, freshness-check, linear-todo-runner) read these — they assume NO package manager or framework, so fill them in. Every command here must RUN TO COMPLETION and exit on its own (the skills run all of them, in-process, as a completion gate). Do NOT list anything that needs a running server or blocks — that's the E2E / Dev entries below:
+- Test: <e.g. npm test>          # unit/integration; no server dependency
 - Lint / Typecheck: <e.g. npm run lint && npm run typecheck>
 - Build: <e.g. npm run build>
-- E2E: <e.g. npm run test:e2e — delete this line if the project has none>
+
+## E2E (server-dependent — run ONCE, in Step 7's E2E flow, not in the gate above)
+- E2E: <e.g. npm run test:e2e> <!-- delete if none. starting-linear-ticket Step 7 starts the dev server, runs this, then stops it — keep it OUT of Verification Commands so it isn't run serverless or re-run inside implementation subagents -->
 
 ## Dev Server (NOT a verification command — long-running)
-- Dev: <e.g. npm run dev> <!-- used for manual testing / E2E server; never run as a completion gate -->
+- Dev: <e.g. npm run dev> <!-- used for manual testing / the E2E server; never run as a completion gate -->
 
 ## Stack
 - Language / framework: <...>

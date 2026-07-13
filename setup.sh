@@ -103,11 +103,16 @@ node - "$CLAUDE_DIR/settings.json" <<'EOF'
 const fs = require('fs');
 const path = require('path');
 const sp = path.resolve(process.argv[2]);
-const hook = path.join(path.dirname(sp), 'hooks', 'merge-gate.mjs');
-const bail = (why) => { console.log(`  ! ${why} — refusing to touch it. Wire the hook by hand (see README).`); process.exit(0); };
-// The hook path is embedded inside a double-quoted shell string below — a path carrying
-// shell metacharacters would break out of it. Bail rather than write a mangled command.
-if (/["'$\\\x60\n]/.test(hook)) bail(`hook path ${hook} contains shell metacharacters`);
+// Normalize to forward slashes: on Windows path.join yields backslashes, which are
+// escape chars inside the POSIX double-quoted shell string below AND would trip the
+// metachar guard — Node and Git-Bash `sh` both accept forward-slash paths (audit round 2:
+// the old guard rejected every Windows path, silently disabling the hook there).
+const hook = path.join(path.dirname(sp), 'hooks', 'merge-gate.mjs').replace(/\\/g, '/');
+// bail = the enforcement hook could NOT be wired. Exit NON-zero so `set -e` aborts the
+// installer loudly instead of printing success while the security gate is absent
+// (audit round 2). Backslash dropped from the reject set — normalized away above.
+const bail = (why) => { console.error(`  ! merge-gate NOT wired: ${why}. Fix and re-run, or wire by hand (see README).`); process.exit(1); };
+if (/["'$\x60\n]/.test(hook)) bail(`hook path ${hook} contains shell metacharacters`);
 const CMD = `IN=$(cat); command -v node >/dev/null 2>&1 || { echo 'merge-gate: node not found on PATH — blocking' >&2; exit 2; }; [ -f "${hook}" ] || { echo 'merge-gate: hook file missing — blocking' >&2; exit 2; }; printf %s "$IN" | node "${hook}"`;
 let s = {};
 if (fs.existsSync(sp)) {
@@ -119,20 +124,27 @@ if (s.hooks == null) s.hooks = {};
 if (typeof s.hooks !== 'object' || Array.isArray(s.hooks)) bail(`${sp}: "hooks" is not an object`);
 if (s.hooks.PreToolUse == null) s.hooks.PreToolUse = [];
 if (!Array.isArray(s.hooks.PreToolUse)) bail(`${sp}: "hooks.PreToolUse" is not an array`);
-// "Wired" = a command referencing THIS install's absolute hook path — a bare filename
-// match would bless stale wirings from an old CLAUDE_DIR. Stale merge-gate entries
-// (mention the filename, wrong path) are dropped first so re-running after a move
-// migrates instead of stacking a dead fail-closed hook on top of the live one.
+// A FUNCTIONAL wiring = a Bash-matcher entry whose command hook is type "command" and runs
+// THIS install's absolute hook path. Bare-filename or wrong-matcher/type entries don't
+// count as wired (they wouldn't actually gate) — they're treated as stale and dropped, so
+// re-running migrates a moved/placeholder/broken entry instead of stacking on it
+// (audit round 2: the old check accepted any command containing the substring).
+const isLiveWiring = (e) => e?.matcher === 'Bash' && Array.isArray(e?.hooks)
+  && e.hooks.some(h => h?.type === 'command' && (h?.command || '').includes(hook));
+const mentionsGate = (h) => (h?.command || '').includes('merge-gate.mjs');
 let dropped = 0;
 for (const e of s.hooks.PreToolUse) {
   if (!Array.isArray(e?.hooks)) continue;
+  const live = isLiveWiring(e);
   const n = e.hooks.length;
-  e.hooks = e.hooks.filter(h => !((h?.command || '').includes('merge-gate.mjs') && !(h?.command || '').includes(hook)));
+  // Drop any merge-gate hook that isn't THIS install's functional one (stale path,
+  // placeholder, wrong type). Keep a correct entry's other hooks intact.
+  e.hooks = e.hooks.filter(h => !(mentionsGate(h) && !(live && h?.type === 'command' && (h?.command || '').includes(hook))));
   dropped += n - e.hooks.length;
 }
 s.hooks.PreToolUse = s.hooks.PreToolUse.filter(e => !Array.isArray(e?.hooks) || e.hooks.length > 0);
-if (dropped) console.log(`  ~ removed ${dropped} stale merge-gate wiring(s) pointing at an old path`);
-const wired = s.hooks.PreToolUse.some(e => (Array.isArray(e?.hooks) ? e.hooks : []).some(h => (h?.command || '').includes(hook)));
+if (dropped) console.log(`  ~ removed ${dropped} stale/nonfunctional merge-gate wiring(s)`);
+const wired = s.hooks.PreToolUse.some(isLiveWiring);
 if (wired && !dropped) { console.log('  = merge-gate already wired in settings.json'); process.exit(0); }
 if (!wired) {
   s.hooks.PreToolUse.push({
