@@ -77,18 +77,22 @@ Skills are the *how*; the *policy* lives in a global `CLAUDE.md`
 makes §5 mechanical instead of aspirational. It inspects every Bash call and:
 
 - **denies** pushes to `main`/`master` — it parses the push grammar rather than
-  pattern-matching shapes, so `git -C`/`--git-dir` forms, any remote name, multi-ref
-  pushes, `--all`/`--mirror`, refspec and branch-deletion forms, and a bare `git push`
-  while sitting on main (resolved against the real current branch) are all caught;
-- **denies** REST/GraphQL PR merges, auto-merge mutations, and interpreter-wrapped
-  merges (`python -c "subprocess.run(['gh','pr','merge',…])"`) — shapes the gate can't
-  inspect are refused, not trusted;
+  pattern-matching shapes, so `git -C`/`--git-dir` forms, any remote name, `--repo`
+  forms, multi-ref pushes, `--all`/`--mirror`, wildcard refspecs, refspec and
+  branch-deletion forms, and a bare `git push` while sitting on main (resolved against
+  the real current branch) are all caught;
+- **denies** REST/GraphQL PR merges (and REST branch deletion), auto-merge mutations,
+  interpreter-wrapped merges (`python -c "subprocess.run(['gh','pr','merge',…])"`), and
+  `git rebase -x/--exec` smuggling — shapes the gate can't inspect are refused, not
+  trusted;
 - **gates `gh pr merge`** on live reviewer state: it queries the PR and blocks unless
   every applicable AI reviewer (Claude leg / Codex leg, per
   [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit)) is clean on
-  the PR's *current head* — and even a clean pass ends in `ask`, never auto-merge;
+  the PR's *current head* — one merge per Bash call, no out-of-band `GH_REPO` repo
+  selection, and even a clean pass ends in `ask`, never auto-merge;
 - **fails closed**: unverifiable state → deny. The installer wires it so a missing hook
   file or missing `node` also blocks rather than silently running ungated.
+- **is regression-tested**: [`merge-gate.test.m
 
 Without [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) the hook
 still bans main-pushes and API-merge bypasses; the reviewer checks simply find no
@@ -142,8 +146,10 @@ lines are:
 
 Snapshots expire — `starting-linear-ticket` runs
 [`freshness-check.md`](skills/starting-linear-ticket/freshness-check.md) before
-executing (file exists / symbol grep / type check) and refreshes stale anchors into a
-worktree-local note, never by editing the durable spec.
+executing (SHA-diff drift check on the snapshot's paths, file-exists, symbol/type grep,
+schema anchors) and refreshes stale anchors into a worktree-local note, never by editing
+the durable spec. Ticket-supplied paths/symbols are treated as untrusted input — quoted,
+repo-contained, never `eval`'d.
 
 ### The status state machine
 
