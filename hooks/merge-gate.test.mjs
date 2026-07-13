@@ -14,10 +14,11 @@ const tmp = mkdtempSync(join(tmpdir(), 'merge-gate-test-'));
 const stubBin = join(tmp, 'bin');
 const ghLog = join(tmp, 'gh.log');
 mkdirSync(stubBin);
+// GH_FILES lets a test inject the PR's changed-file list into the `pr view` JSON.
 writeFileSync(join(stubBin, 'gh'), `#!/bin/sh
 printf '%s\\n' "$*" >> "$GH_LOG"
 case "$*" in
-  "pr view"*) echo '{"number":7,"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","files":[],"url":"https://github.com/own/repo/pull/7"}' ;;
+  "pr view"*) echo '{"number":7,"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","files":['"\${GH_FILES:-}"'],"url":"https://github.com/own/repo/pull/7"}' ;;
   "api --paginate --slurp"*) echo '[[]]' ;;
   *) echo "HTTP 404" >&2; exit 1 ;;
 esac
@@ -30,12 +31,12 @@ const repoFeat = join(tmp, 'repo-feat');
 execFileSync('git', ['init', '-q', '-b', 'main', repoMain]);
 execFileSync('git', ['init', '-q', '-b', 'feat', repoFeat]);
 
-const run = (command, cwd = repoFeat) => {
+const run = (command, cwd = repoFeat, files = '') => {
   writeFileSync(ghLog, '');
   const r = spawnSync('node', [HOOK], {
     input: JSON.stringify({ tool_input: { command }, cwd }),
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${stubBin}:${process.env.PATH}`, HOME: tmp, GH_LOG: ghLog },
+    env: { ...process.env, PATH: `${stubBin}:${process.env.PATH}`, HOME: tmp, GH_LOG: ghLog, GH_FILES: files },
   });
   let decision = 'none', reason = '';
   try {
@@ -47,7 +48,7 @@ const run = (command, cwd = repoFeat) => {
 
 let fail = 0;
 const t = (name, command, expect, extra) => {
-  const res = run(command, extra?.cwd);
+  const res = run(command, extra?.cwd, extra?.files);
   const ok = res.decision === expect && (!extra?.logHas || res.ghLog.includes(extra.logHas));
   if (!ok) {
     fail++;
@@ -100,6 +101,11 @@ t('GH_REPO env selection', 'GH_REPO=own/repo gh pr merge 5', 'deny');
 t('numeric flag value not the selector', 'gh pr merge -t 123 5 --squash', 'ask', { logHas: 'pr view 5' });
 t('selector after flags', 'gh pr merge --squash 15', 'ask', { logHas: 'pr view 15' });
 t('bash -c wrapped merge still gated', `bash -c "gh pr merge 9 --squash"`, 'ask', { logHas: 'pr view 9' });
+// bootstrap PR: adds code-review.yml + source, no reviewers configured yet → split, not 'ask'
+t('bundled review-workflow + code denied', 'gh pr merge 5', 'deny',
+  { files: '{"path":".github/workflows/code-review.yml"},{"path":"src/app.ts"}' });
+t('workflow-only self-edit is not denied here', 'gh pr merge 5', 'ask',
+  { files: '{"path":".github/workflows/code-review.yml"}' });
 
 // ---- heredoc data stays data ----
 t('doc heredoc mentioning merge', `cat > notes.md <<'EOF'\nrun gh pr merge 5 to merge\nEOF`, 'none');

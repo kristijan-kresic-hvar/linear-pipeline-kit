@@ -267,19 +267,26 @@ try {
   const claudeRequired = claudeActive || exists('.github/workflows/code-review.yml');
   const codexRequired = codexActive || codexConfigured();
 
-  if (!claudeRequired && !codexRequired) {
-    out('ask', 'merge-gate: no AI reviewers configured or active on this PR — manual approval only');
-  }
-
-  const problems = [];
   const files = (view.files || []).map((f) => f.path);
   const touchesReviewWf = files.includes('.github/workflows/code-review.yml');
   // Waiver is NARROW: only when every changed file is workflow config — bundling code
   // with a code-review.yml edit must NOT skip Claude (adversarial finding 2026-07-07).
   const waiver = touchesReviewWf && files.every((p) => p.startsWith('.github/workflows/'));
+
+  // The "no reviewers" fallback must come AFTER the workflow-edit check, else a bootstrap
+  // PR that ADDS code-review.yml alongside source escapes the split-PR rule: neither leg
+  // is "required" yet (code-review.yml isn't on the default branch), so an early 'ask'
+  // would wave through un-reviewable code (audit 2026-07-13). Bundling code with the
+  // review-workflow edit is denied regardless of current reviewer state.
   if (touchesReviewWf && !waiver) {
-    problems.push('PR bundles code with a code-review.yml edit — Claude cannot review it (self-skip); split the PR');
+    out('deny', `merge-gate BLOCKED PR #${num}: PR bundles code with a code-review.yml edit — Claude cannot review it (self-skip); split the PR`);
   }
+  if (!claudeRequired && !codexRequired) {
+    out('ask', 'merge-gate: no AI reviewers configured or active on this PR — manual approval only');
+  }
+
+  const problems = [];
+  // (bundled-code + code-review.yml already denied above, before the no-reviewers gate.)
 
   if (claudeRequired && !waiver && !touchesReviewWf) {
     if (!claudeActive) {
