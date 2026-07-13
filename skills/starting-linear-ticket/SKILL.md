@@ -357,7 +357,7 @@ Capture the PR URL from output.
 gh pr comment <pr-number> --body "@codex review"
 ```
 
-This yields exactly one run per head, always in the gate-trusted form: findings arrive as a COMMENTED review; a clean pass arrives as a head-naming "didn't find any major issues" comment. **Verify it took** per the ai-review-kit playbook's re-trigger step (routed via `address-pr-review`): 👀 ack on the trigger comment within ~1 min (no 👀 → re-fire, cap 3 per head per the playbook), review lands in ~5-15 min — overlap the wait with Step 9's local code review.
+This yields exactly one run per head, always in the gate-trusted form: findings arrive as a COMMENTED review; a clean pass arrives as a head-naming "didn't find any major issues" comment. **Verify it took** per the [ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit) playbook's re-trigger step (routed via `address-pr-review`): 👀 ack on the trigger comment within ~1 min (no 👀 → re-fire, cap 3 per head per the playbook), review lands in ~5-15 min — overlap the wait with Step 9's local code review.
 
 Skip only if the repo has no Codex (no `## Code Review Rules` section on the default branch AND your branch doesn't add it). The `babysit-prs` sweep (ai-review-kit companion, if installed) backstops any PR whose trigger never fired — the merge-gate goes red with "Codex configured but never touched", and the sweep fires the trigger within ≤30 min; without it, re-fire the trigger by hand when the gate reports that. (If auto-review is ever re-enabled, revert this step to settle-then-fire: wait for the auto-run's 👀 to clear, trigger only on a 👍-only clean pass — never run two Codex reviews concurrently.)
 
