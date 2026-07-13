@@ -204,7 +204,12 @@ if (!merges.length) process.exit(0); // no opinion — normal permission flow
 const allHelp = merges.every((mm) => /^\s+(?:-h|--help)\b/.test(scan.slice(mm.index + mm[0].length)));
 if (allHelp) {
   const HELP_SEG = /^\s*gh\s+(?:(?:-R|--repo)[=\s]+(?:"[^"]*"|'[^']*'|\S+)\s+)?pr\s+merge\s+(?:-h|--help)\s*$/;
-  const riders = scanSegs.map((s) => s.trim()).filter(Boolean).filter((s) => !HELP_SEG.test(s));
+  // Purity check runs over ALL ORIGINAL segments (splitSegments(cmd)), NOT the safe-lead-
+  // filtered scanSegs — otherwise a filtered rider (`echo x > f`, `cp secret /tmp`, `git
+  // commit`) vanishes from the check and rides the blanket 'allow' (audit round 3). An
+  // 'allow' covers the whole Bash call, so allow ONLY when every non-empty segment IS a
+  // help-form merge; help + anything else → no opinion, normal permission flow vets it.
+  const riders = splitSegments(cmd).map((s) => s.trim()).filter(Boolean).filter((s) => !HELP_SEG.test(s));
   if (!riders.length) out('allow', 'merge-gate: --help only');
   process.exit(0); // help + riders → no opinion; normal permission flow handles the riders
 }
