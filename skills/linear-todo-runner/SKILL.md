@@ -40,7 +40,9 @@ discussed.
   in the kickoff table). A ticket for another repo is dropped from the queue and
   listed in the kickoff table as out-of-repo — never implemented from here.
 - **Expand parent epics** into their children (`list_issues {parentId}`); schedule
-  children, never the epic.
+  children, never the epic. Schedule only children that are still **Todo** and not on the
+  exclusion list — skip children already `Done`/`Canceled` (terminal) or `In Progress`/`In
+  Review` (already owned; a claimed one is handled by the resume path, not re-scheduled).
 - **DAG gate:** `safeToStart(issue)` = every `blockedBy` issue is Done. Machine
   relations only, never free-text parsing.
 - **Conflict gate:** tickets whose Implementation Snapshots touch the same files don't
@@ -48,6 +50,12 @@ discussed.
   OR In Review (i.e. until that PR merges and the issue is Done), not merely while its
   agent is alive; branching off main without the rival's unmerged changes guarantees a
   conflict or a silent semantic collision.
+- **Snapshotless ticket = unknown footprint.** The conflict gate is driven by
+  Implementation Snapshot paths, so a ticket with **no** Snapshot has an *empty* conflict
+  set and would appear falsely safe to run alongside anything. Don't trust that: run a
+  snapshotless ticket **solo** (no other agent concurrent — treat it as conflicting with
+  every in-flight ticket), or spec-block it if it also lacks executable AC. Never let a
+  missing Snapshot read as "no conflicts."
 - Order: Urgent → High → Medium → Low.
 
 ### 2. Present queue for approval — the ONE kickoff interaction
@@ -60,6 +68,14 @@ the only question the runner ever asks; everything after runs to completion.
 list and re-apply it on every refill re-fetch — a ticket the user pulled at kickoff must
 not sneak back in. (Tickets the user *adds* mid-run are fair game — that's what the
 re-fetch is for.)
+
+**Make removals crash-durable, not just session-durable.** The in-memory exclusion list
+is lost on a crash/restart, and the removed ticket is still `Todo` in Linear — a
+cross-session resume would re-queue it. So when the user removes a ticket at kickoff,
+also move it **out of Todo** in Linear (`save_issue {id, state:"Backlog"}` + a worklog
+comment "deferred at kickoff <date>"), preserving labels. A later resume re-fetches Todo
+and simply won't see it. Reordering is session-only (priority already orders the re-fetch);
+only *removal* needs the durable Backlog move.
 
 ### 3. Run the rolling queue
 
@@ -173,8 +189,10 @@ When an agent reports its PR:
   crashed work lives). In Progress issues **carrying a `claimed by todo-runner`
   comment** and no open PR are orphaned claims (re-spawn from the recorded worktree
   path — after verifying it against `git worktree list`, same rule as cleanup); In
-  Progress WITHOUT the marker is human-claimed — never touch it; In Review issues route
-  to the review loop.
+  Progress WITHOUT the marker is human-claimed — never touch it. **In Review issues get
+  the SAME ownership check:** route to the review loop ONLY if they carry a `claimed by
+  todo-runner` comment; an In Review issue without the marker is a human's own PR — leave
+  it alone (the runner grabbing it would fire reviews and fixes on work it never started).
 
 ### 6. Report
 
@@ -195,3 +213,14 @@ state.
 - **Fresh context per ticket; pinned CWD per ticket; own worktree per ticket.**
 - **Preserve existing labels on every `save_issue`.**
 - **Lead never edits code; runner never merges; nothing ever commits to main.**
+
+## Known limitations (supervised-solo scope — read before unattended use)
+
+This runner is built for **one supervised operator**, not unattended multi-runner fleets.
+The claim is best-effort, not atomic: status flip → claim comment → worktree → agent
+launch are separate steps, and Linear exposes no compare-and-set, so two runners racing
+the same team (or a crash mid-claim) can double-claim or orphan a ticket. Mitigations in
+place — the `claimed by todo-runner` marker, resume reconciliation, and `git worktree
+list` verification — narrow the window but don't close it. **Run ONE runner per team, and
+keep it supervised.** True concurrency-safe claiming needs an external lock/lease the kit
+deliberately doesn't build.

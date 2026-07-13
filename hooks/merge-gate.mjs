@@ -70,9 +70,12 @@ const splitSegments = (s) => {
 // echoed docs) are inert. `git` is split: `git commit`/`add`/etc. are safe, `git push` is NOT.
 // node/python are NOT safe leads — `-e`/`-c` execute their args (child_process.execSync
 // can merge). Adversarial finding 2026-07-07. NOT safe either (audit 2026-07-13):
-// awk (system() executes), sed (GNU `e` command executes), git config (alias definitions
-// smuggle commands — and keeping config visible lets the merge/push rules read the alias body).
-const SAFE_LEAD = /^\s*(?:sudo\s+|env\s+\S+=\S*\s+)*(?:git\s+(?:commit|add|status|log|diff|show|stash|checkout|switch|restore|worktree|fetch|pull|rebase|reset|tag|branch)|echo|printf|cat|tee|:|true|jq|grep|rg|ls|cd|mkdir|touch|cp|mv|export)\b/;
+// awk (system() executes), sed (GNU `e` command executes), git config (alias bodies),
+// AND git rebase (`-x`/`--exec <cmd>` runs an arbitrary command each step — `git rebase
+// -x "gh pr merge N"` smuggles a merge past a dropped segment, audit round 2). This is a
+// regex gate, not a shell parser: it can't see every indirection, so the server-side CI
+// twin + branch protection remain the real backstop — this layer just closes the cheap holes.
+const SAFE_LEAD = /^\s*(?:sudo\s+|env\s+\S+=\S*\s+)*(?:git\s+(?:commit|add|status|log|diff|show|stash|checkout|switch|restore|worktree|fetch|pull|reset|tag|branch)|echo|printf|cat|tee|:|true|jq|grep|rg|ls|cd|mkdir|touch|cp|mv|export)\b/;
 const scanSegs = splitSegments(cmd).filter((seg) => !SAFE_LEAD.test(seg));
 const scan = scanSegs.join(' ; ');
 
@@ -102,6 +105,12 @@ const EXEC_SMUGGLE = /\b(?:node|python3?|ruby|perl|deno|bun)\b[^\n;&|]*\s-{1,2}(
 if (EXEC_SMUGGLE.test(scan) && /\b(?:gh|git)\b/.test(scan) && /\b(?:merge|push)\b/.test(scan)) {
   out('deny', 'merge-gate: inline interpreter/exec code referencing gh/git merge|push cannot be verified through a wrapper — run the command directly (gh pr merge / git push) so the gate can inspect it');
 }
+// `git rebase -x/--exec "<cmd>"` runs <cmd> at each (rewritten) commit — a merge/push
+// smuggled there executes against heads the gate never verified (audit round 2). Same
+// verdict as interpreter smuggling: can't verify through the wrapper → deny.
+if (/\bgit\b[^\n;&|]*\brebase\b[^\n;&|]*\s(?:-x\b|--exec\b)/.test(scan) && /\b(?:merge|push)\b/.test(scan)) {
+  out('deny', 'merge-gate: `git rebase -x/--exec` runs its command at rewritten heads the gate cannot verify — run the merge/push directly');
+}
 
 // ---- git push: parse the push grammar per segment instead of pattern-matching shapes.
 // The old two-remote regex missed alternate remote names, multi-ref pushes, --all/--mirror,
@@ -119,21 +128,28 @@ const pushProblem = (seg) => {
     i += GIT_VAL.has(toks[i]) ? 2 : 1;
   }
   if (toks[i] !== 'push') return null;
-  const PUSH_VAL = new Set(['--receive-pack', '--repo', '--exec', '-o', '--push-option']);
-  let del = false; const pos = [];
+  const PUSH_VAL = new Set(['--receive-pack', '--exec', '-o', '--push-option']);
+  let del = false; let repoFlag = false; const pos = [];
   for (i += 1; i < toks.length; i++) {
     const t = toks[i];
     if (t === '--delete' || t === '-d') { del = true; continue; }
     if (t === '--all' || t === '--mirror' || t === '--branches') return `${t} pushes every branch, including main/master`;
+    // --repo supplies the remote out of the positional slot, so pos[0] is then a REFSPEC,
+    // not the remote — don't slice it off (audit round 2: `git push --repo origin main`
+    // was dropping `main`). Handle both `--repo X` and `--repo=X`.
+    if (t === '--repo') { repoFlag = true; i++; continue; }
+    if (t.startsWith('--repo=')) { repoFlag = true; continue; }
     if (/^\d*[<>]/.test(t)) continue; // redirections are not refs
     if (t.startsWith('-')) { if (PUSH_VAL.has(t)) i++; continue; }
     pos.push(t.replace(/^['"]|['"]$/g, ''));
   }
-  const refs = pos.slice(1); // pos[0] = remote (any name — never assume origin/upstream)
+  // With --repo, every positional is a refspec; otherwise pos[0] is the remote (any name).
+  const refs = repoFlag ? pos : pos.slice(1);
   let needBranch = refs.length === 0; // bare push targets the CURRENT branch
   for (const r of refs) {
     const dst = (del || !r.includes(':')) ? r : r.slice(r.indexOf(':') + 1);
     if (isMain(dst)) return `\`${r}\` targets main/master`;
+    if (dst.includes('*')) return `\`${r}\` is a wildcard refspec — can't prove it excludes main/master`;
     if (/^\+?HEAD$/.test(dst)) needBranch = true; // HEAD refspec = current branch too
   }
   if (needBranch) {
@@ -180,10 +196,17 @@ if (pushWhy) {
 const MERGE_RE = /\bgh\s+(?:(?:-R|--repo)[=\s]+(?:"[^"]*"|'[^']*'|\S+)\s+)?pr\s+merge\b/g;
 const merges = [...scan.matchAll(MERGE_RE)];
 if (!merges.length) process.exit(0); // no opinion — normal permission flow
-// --help is allowed ONLY when every occurrence is help-only — a --help alongside a real
-// merge must not allowlist the whole Bash call (audit 2026-07-13).
-if (merges.every((mm) => /^\s+(?:-h|--help)\b/.test(scan.slice(mm.index + mm[0].length)))) {
-  out('allow', 'merge-gate: --help only');
+// --help handling. An 'allow' covers the ENTIRE Bash call, so it's only safe when the
+// whole call is nothing but help invocation(s) — `gh pr merge --help && rm -rf ~` must NOT
+// be blanket-allowed on the strength of the help part (audit round 2). If every merge
+// occurrence is help BUT there are other executable segments (riders), emit no opinion and
+// let the normal permission flow vet those riders; only a pure help call gets 'allow'.
+const allHelp = merges.every((mm) => /^\s+(?:-h|--help)\b/.test(scan.slice(mm.index + mm[0].length)));
+if (allHelp) {
+  const HELP_SEG = /^\s*gh\s+(?:(?:-R|--repo)[=\s]+(?:"[^"]*"|'[^']*'|\S+)\s+)?pr\s+merge\s+(?:-h|--help)\s*$/;
+  const riders = scanSegs.map((s) => s.trim()).filter(Boolean).filter((s) => !HELP_SEG.test(s));
+  if (!riders.length) out('allow', 'merge-gate: --help only');
+  process.exit(0); // help + riders → no opinion; normal permission flow handles the riders
 }
 // One merge per Bash call — the gate verifies exactly ONE PR and its decision covers the
 // whole call, so a second merge would ride an approval it never earned (audit 2026-07-13).
@@ -336,7 +359,11 @@ try {
   }
 
   if (problems.length) out('deny', `merge-gate BLOCKED PR #${num}: ${problems.join('; ')}`);
-  out('ask', `merge-gate PASSED for PR #${num} on ${head.slice(0, 8)}${waiver ? ' (Claude leg waived: workflow-only self-edit — verify on next PR)' : ''} — human approval still required`);
+  // Verification is bound to THIS head; between here and the human clicking approve, a new
+  // push could change the head (time-of-check/time-of-use). We surface the verified SHA and
+  // stop at 'ask' — the human is the TOCTOU backstop. For a hard guarantee, pass
+  // `--match-head-commit ${head}` on the merge; branch protection is the server-side twin.
+  out('ask', `merge-gate PASSED for PR #${num} on ${head.slice(0, 8)}${waiver ? ' (Claude leg waived: workflow-only self-edit — verify on next PR)' : ''} — human approval still required (verified head ${head.slice(0, 8)}; a new push after this invalidates it)`);
 } catch (e) {
   out('deny', `merge-gate: could not verify reviewer state (${String(e.message || e).slice(0, 120)}) — failing closed (docs/prose mentioning merges: write via file tools, not Bash heredocs)`);
 }
