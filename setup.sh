@@ -124,13 +124,16 @@ if (s.hooks == null) s.hooks = {};
 if (typeof s.hooks !== 'object' || Array.isArray(s.hooks)) bail(`${sp}: "hooks" is not an object`);
 if (s.hooks.PreToolUse == null) s.hooks.PreToolUse = [];
 if (!Array.isArray(s.hooks.PreToolUse)) bail(`${sp}: "hooks.PreToolUse" is not an array`);
-// A FUNCTIONAL wiring = a Bash-matcher entry whose command hook is type "command" and runs
-// THIS install's absolute hook path. Bare-filename or wrong-matcher/type entries don't
-// count as wired (they wouldn't actually gate) — they're treated as stale and dropped, so
-// re-running migrates a moved/placeholder/broken entry instead of stacking on it
-// (audit round 2: the old check accepted any command containing the substring).
+// A FUNCTIONAL wiring = a Bash-matcher entry whose command hook is type "command" and
+// actually pipes to `node "<hook>"`. A bare `.includes(hook)` substring match wrongly
+// accepts a suffixed backup path (`node "<hook>.bak"` contains `<hook>`) or a placeholder
+// (`echo <hook>`) as wired, leaving the real hook uninstalled (audit round 3). Match the
+// canonical `node "<hook>"` invocation the installer writes — the closing quote right after
+// the path rejects `.bak`/other suffixes; a hand-wired variant is treated as stale and
+// re-normalized to canonical. (hook has no `"` — the metachar guard above guarantees it.)
+const runsHook = (cmd) => (cmd || '').includes(`node "${hook}"`);
 const isLiveWiring = (e) => e?.matcher === 'Bash' && Array.isArray(e?.hooks)
-  && e.hooks.some(h => h?.type === 'command' && (h?.command || '').includes(hook));
+  && e.hooks.some(h => h?.type === 'command' && runsHook(h?.command));
 const mentionsGate = (h) => (h?.command || '').includes('merge-gate.mjs');
 let dropped = 0;
 for (const e of s.hooks.PreToolUse) {
@@ -138,8 +141,8 @@ for (const e of s.hooks.PreToolUse) {
   const live = isLiveWiring(e);
   const n = e.hooks.length;
   // Drop any merge-gate hook that isn't THIS install's functional one (stale path,
-  // placeholder, wrong type). Keep a correct entry's other hooks intact.
-  e.hooks = e.hooks.filter(h => !(mentionsGate(h) && !(live && h?.type === 'command' && (h?.command || '').includes(hook))));
+  // suffixed backup, placeholder, wrong type). Keep a correct entry's other hooks intact.
+  e.hooks = e.hooks.filter(h => !(mentionsGate(h) && !(live && h?.type === 'command' && runsHook(h?.command))));
   dropped += n - e.hooks.length;
 }
 s.hooks.PreToolUse = s.hooks.PreToolUse.filter(e => !Array.isArray(e?.hooks) || e.hooks.length > 0);
