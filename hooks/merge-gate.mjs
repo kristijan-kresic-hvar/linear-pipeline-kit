@@ -6,6 +6,22 @@
 // Fail-closed: unverifiable state → deny. Best-effort layer — the CI merge-gate status
 // (the kit's workflows/merge-gate.yml) is the server-side twin; web UI = human override.
 // Regression tests: merge-gate.test.mjs (plain node, no network) — run it after edits.
+//
+// ┌─ PARITY TWIN ─────────────────────────────────────────────────────────────┐
+// │ This hook and ai-review-kit/workflows/merge-gate.yml are TWO implementations │
+// │ of ONE verdict policy — the client-side twin (blocks `gh pr merge` locally,  │
+// │ ends in 'ask') and the server-side twin (stamps the commit status). They     │
+// │ cannot be one file (Node hook vs GitHub Actions YAML), so KEEP THEM IN        │
+// │ LOCKSTEP. Shared verdict rules both MUST enforce:                             │
+// │   1. Claude APPROVED on head, postdating the last base retarget              │
+// │   2. Codex clean comment naming head, postdating retarget + Codex's last      │
+// │      review + its last non-clean comment                                      │
+// │   3. unresolved Claude-rooted AND unresolved Codex-rooted threads block       │
+// │   4. any thread whose latest reply starts "escalated to human" blocks         │
+// │   5. two open PRs sharing this exact head commit → fail closed                │
+// │   6. Codex "create an environment" onboarding notice is NOT review activity   │
+// │ Change one twin's verdict logic → change the other + BOTH test suites.        │
+// └───────────────────────────────────────────────────────────────────────────┘
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -271,6 +287,15 @@ try {
   const comments = flat(gh('api', '--paginate', '--slurp', `repos/${repo}/issues/${num}/comments`));
   const reactions = flat(gh('api', '--paginate', '--slurp', `repos/${repo}/issues/${num}/reactions`));
 
+  // Base-retarget cutoff (PARITY rule 1/2): retargeting keeps the head SHA — and every
+  // head-named approval / clean comment — while the effective diff changes, so artifacts
+  // predating the last base_ref_changed / automatic_base_change_succeeded event no longer
+  // count. Empty string when never retargeted (sorts below every real timestamp).
+  const timeline = flat(gh('api', '--paginate', '--slurp', `repos/${repo}/issues/${num}/timeline`));
+  const baseCutoff = timeline
+    .filter((e) => e.event === 'base_ref_changed' || e.event === 'automatic_base_change_succeeded')
+    .map((e) => e.created_at).filter(Boolean).sort().pop() || '';
+
   // A Codex ONBOARDING notice ("To use Codex here, create an environment for this
   // repo") is posted when Codex is NOT set up — it is the opposite of review activity,
   // yet its bare presence as a Codex comment used to flip codexActive true and demand a
@@ -319,48 +344,77 @@ try {
     out('ask', 'merge-gate: no AI reviewers configured or active on this PR — manual approval only');
   }
 
+  // Review threads (PARITY rules 3/4) — fetched ONCE when either leg is active, in one
+  // GraphQL call: root author identifies the reviewer; the last-100 comment window catches
+  // an "escalated to human" marker under later replies. Unresolved Claude-rooted AND
+  // Codex-rooted threads both block (an APPROVED verdict does not clear open inline
+  // findings); any escalated thread blocks whichever reviewer rooted it.
+  let thTotal = 0, unresolvedCodex = 0, unresolvedClaude = 0, escalated = 0;
+  if (claudeActive || codexActive) {
+    const th = JSON.parse(gh('api', 'graphql',
+      '-f', 'query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){totalCount nodes{isResolved root: comments(first:1){nodes{author{login}}} latest: comments(last:100){nodes{body}}}}}}}',
+      '-F', `o=${repo.split('/')[0]}`, '-F', `r=${repo.split('/')[1]}`, '-F', `n=${num}`,
+      '--jq', '{total: .data.repository.pullRequest.reviewThreads.totalCount, '
+        + 'unresolvedCodex: ([.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | select(((.root.nodes[0].author.login) // "") | test("codex"))] | length), '
+        + 'unresolvedClaude: ([.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | select(((.root.nodes[0].author.login) // "") | test("^claude"))] | length), '
+        + 'escalated: ([.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | select([.latest.nodes[].body | ascii_downcase | startswith("escalated to human")] | any)] | length)}',
+    ));
+    thTotal = th.total; unresolvedCodex = th.unresolvedCodex; unresolvedClaude = th.unresolvedClaude; escalated = th.escalated;
+  }
+
   const problems = [];
   // (bundled-code + code-review.yml already denied above, before the no-reviewers gate.)
+  if (thTotal > 100) problems.push(`${thTotal} review threads — too many to verify (cap 100)`);
+  if (escalated > 0) problems.push(`${escalated} thread(s) escalated to human await an answer`);
 
   if (claudeRequired && !waiver && !touchesReviewWf) {
+    if (unresolvedClaude > 0) problems.push(`${unresolvedClaude} unresolved Claude thread(s)`);
     if (!claudeActive) {
       problems.push('Claude is configured (code-review.yml) but has never reviewed this PR — check the workflow run / CLAUDE_CODE_OAUTH_TOKEN');
     } else {
       // LATEST claude[bot] verdict on the head (reviews are chronological) — a later
-      // CHANGES_REQUESTED on the same SHA must override an earlier APPROVED.
-      const latest = reviews.filter((r) => r.user?.login === 'claude[bot]' && r.commit_id === head).pop();
+      // CHANGES_REQUESTED on the same SHA overrides an earlier APPROVED — and POSTDATING
+      // the last base retarget (a review that judged the pre-retarget diff no longer counts).
+      const latest = reviews
+        .filter((r) => r.user?.login === 'claude[bot]' && r.commit_id === head && (r.submitted_at || '') > baseCutoff)
+        .pop();
       if (latest?.state !== 'APPROVED') problems.push(`Claude's latest verdict on head ${head.slice(0, 8)} is ${latest?.state || 'NONE'}, not APPROVED`);
     }
   }
 
+  const isCodexClean = (b) => /didn'?t find any major issues/i.test(b || '');
   if (codexRequired) {
     if (!codexActive) {
       problems.push('Codex is configured (AGENTS.md § Code Review Rules) but has never touched this PR — comment "@codex review" (or drop that section if Codex reviews were turned off)');
     } else {
-      const th = JSON.parse(gh(
-        'api', 'graphql',
-        '-f', 'query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){totalCount nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}',
-        '-F', `o=${repo.split('/')[0]}`, '-F', `r=${repo.split('/')[1]}`, '-F', `n=${num}`,
-        '--jq', '{total: .data.repository.pullRequest.reviewThreads.totalCount, unresolved: [.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | select(((.comments.nodes[0].author.login) // "") | test("codex"))] | length}',
-      ));
-      if (th.total > 100) problems.push(`${th.total} review threads — too many to verify (cap 100)`);
-      if (th.unresolved > 0) problems.push(`${th.unresolved} unresolved Codex thread(s)`);
+      if (unresolvedCodex > 0) problems.push(`${unresolvedCodex} unresolved Codex thread(s)`);
 
-      // Clean signals: comment naming the head (authoritative) — matches Codex's actual
-      // phrase, and any embedded 10+ hex-char prefix of the head. A 👍 reaction newer than
-      // the head commit is accepted here as a SECONDARY clean signal (this hook runs
-      // synchronously and CAN read reactions; the CI twin merge-gate.yml can't — no event
-      // fires for reactions — so it requires the comment; the divergence is platform-forced,
-      // not a preference). Still human-gated: the hook ends in 'ask', never auto-merge. A
-      // backdated force-push can defeat the date check — acceptable solo, revisit for teams.
+      // Clean comment must POSTDATE all of: the last base retarget, Codex's latest review
+      // (a findings review after an old clean supersedes it), and its last non-clean comment
+      // (max updated_at/created_at — an edited-later finding invalidates an old clean).
+      const codexLastReview = reviews.filter((r) => CODEX.test(r.user?.login || ''))
+        .map((r) => r.submitted_at).filter(Boolean).sort().pop() || '';
+      const codexLastOther = comments
+        .filter((c) => CODEX.test(c.user?.login || '') && !isCodexClean(c.body) && !isCodexSetupNotice(c.body))
+        .map((c) => ((c.updated_at || '') > (c.created_at || '') ? c.updated_at : c.created_at))
+        .filter(Boolean).sort().pop() || '';
+      const codexCutoff = [baseCutoff, codexLastReview, codexLastOther].sort().pop() || '';
+
+      // Clean signals: comment naming the head (authoritative) — Codex's actual phrase plus
+      // an embedded 10+ hex-char prefix of the head. A 👍 reaction newer than the head commit
+      // is a SECONDARY signal (this hook runs synchronously and CAN read reactions; the CI
+      // twin can't — no event fires for reactions — so it requires the comment; the divergence
+      // is platform-forced). Both must postdate the cutoff. Still human-gated: ends in 'ask'.
       let clean = comments.some((c) => CODEX.test(c.user?.login || '')
-        && /didn'?t find any major issues/i.test(c.body || '')
+        && (c.created_at || '') > codexCutoff
+        && isCodexClean(c.body)
         && ((c.body || '').match(/\b[0-9a-f]{10,40}\b/g) || []).some((h) => head.startsWith(h)));
       if (!clean) {
         const commitDate = gh('api', `repos/${repo}/commits/${head}`, '--jq', '.commit.committer.date').trim();
-        clean = reactions.some((r) => CODEX.test(r.user?.login || '') && r.content === '+1' && r.created_at > commitDate);
+        clean = reactions.some((r) => CODEX.test(r.user?.login || '') && r.content === '+1'
+          && r.created_at > commitDate && r.created_at > codexCutoff);
       }
-      if (!clean) problems.push(`Codex has no clean signal on head ${head.slice(0, 8)} (re-trigger with "@codex review")`);
+      if (!clean) problems.push(`Codex has no current clean signal on head ${head.slice(0, 8)} (re-trigger with "@codex review")`);
     }
   }
 
@@ -368,6 +422,15 @@ try {
   if (waiver && !codexRequired) {
     problems.push('self-edit waiver leaves ZERO reviewers — merge via the web UI after personal review');
   }
+
+  // Sibling-PR collision (PARITY rule 5): the CI status is commit-scoped, so two open PRs
+  // sharing this exact head can't be told apart on the shared status. commits/<sha>/pulls
+  // returns PRs that merely CONTAIN the commit, so the .head.sha equality filter is
+  // load-bearing (excludes stacked PRs where it's an ancestor). We are past the
+  // no-reviewers gate here, so a leg is always required.
+  const siblings = flat(gh('api', '--paginate', '--slurp', `repos/${repo}/commits/${head}/pulls`))
+    .filter((p) => p.state === 'open' && p.head?.sha === head && p.number !== num).length;
+  if (siblings > 0) problems.push(`${siblings} other open PR(s) share this head commit — merge via the web UI after checking each PR's reviews`);
 
   if (problems.length) out('deny', `merge-gate BLOCKED PR #${num}: ${problems.join('; ')}`);
   // Verification is bound to THIS head; between here and the human clicking approve, a new
