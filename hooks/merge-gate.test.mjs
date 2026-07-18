@@ -20,7 +20,7 @@ const HEAD = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 writeFileSync(join(stubBin, 'gh'), `#!/usr/bin/env node
 const fs = require('fs');
 const a = process.argv.slice(2).join(' ');
-fs.appendFileSync(process.env.GH_LOG, a + '\\n');
+fs.appendFileSync(process.env.GH_LOG, process.cwd() + ' :: ' + a + '\\n');
 const E = process.env;
 const j = (v, d) => v ? v : d;
 const die404 = () => { process.stderr.write('HTTP 404'); process.exit(1); };
@@ -190,6 +190,16 @@ t('sibling PR sharing head commit → deny', 'gh pr merge 5', 'deny',
 t('stacked PR (commit is ancestor, different head) → pass (ask)', 'gh pr merge 5', 'ask',
   { codereview: '1', reviews: revClaude('APPROVED'),
     siblings: `[[{"number":9,"state":"open","head":{"sha":"0000000000000000000000000000000000000000"}}]]` });
+
+// ---- cwd resolution: `cd <repo> && gh pr merge` verifies from the cd'd repo, not the
+// session cwd (live failure 2026-07-19: session in a non-repo dir → gh "not a git
+// repository" → fail closed even for a valid merge) ----
+t('cd repo then merge runs gh in that repo', `cd ${repoFeat} && gh pr merge 5 --squash`, 'ask',
+  { cwd: tmp, logHas: `${repoFeat} :: pr view 5` });
+t('sequential cds compose', `cd ${tmp} && cd repo-feat && gh pr merge 5`, 'ask',
+  { cwd: '/', logHas: `${repoFeat} :: pr view 5` });
+t('cd AFTER the merge is ignored', `gh pr merge 5 && cd /somewhere`, 'ask',
+  { cwd: repoFeat, logHas: `${repoFeat} :: pr view 5` });
 
 // ---- heredoc data stays data ----
 t('doc heredoc mentioning merge', `cat > notes.md <<'EOF'\nrun gh pr merge 5 to merge\nEOF`, 'none');
