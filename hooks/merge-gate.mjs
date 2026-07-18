@@ -24,7 +24,7 @@
 // └───────────────────────────────────────────────────────────────────────────┘
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const out = (decision, reason) => {
   process.stdout.write(JSON.stringify({
@@ -241,7 +241,16 @@ if (/\bGH_REPO=/.test(scan)) {
 }
 const m = merges[0];
 
-const cwd = input?.cwd || process.cwd();
+// The gh calls below run with the hook's cwd (the SESSION's original cwd), not the
+// shell's — a merge phrased as `cd <repo> && gh pr merge N` used to verify from a
+// non-repo dir and fail closed with "not a git repository" (live 2026-07-19). Honor
+// the command's own `cd` segments (those preceding the merge), composing them in order.
+let cwd = input?.cwd || process.cwd();
+for (const s of splitSegments(cmd)) {
+  const cdm = s.trim().match(/^cd\s+("[^"]+"|'[^']+'|\S+)$/);
+  if (cdm) cwd = resolve(cwd, cdm[1].replace(/^['"]|['"]$/g, '').replace(/^~(?=\/|$)/, HOME));
+  if (/\bgh\b/.test(s) && /\bpr\s+merge\b/.test(s)) break;
+}
 const T0 = Date.now();
 const gh = (...args) => {
   if (Date.now() - T0 > 35000) throw new Error('gate deadline exceeded');
