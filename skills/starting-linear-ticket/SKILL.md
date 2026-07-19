@@ -328,7 +328,7 @@ gh pr create --title "<PROJ>-<number>: <ticket-title>" --body "$(cat <<'EOF'
 <what changed and WHY, 2-3 bullets — intent first, mechanics second>
 
 ## Linear
-<PROJ>-<number>. Acceptance criteria (copied from the ticket — the AI reviewers can't read Linear):
+<PROJ>-<number>. Acceptance criteria (copied from the ticket — Codex can't read Linear; the Claude reviewer auto-fetches the ticket spec only when the repo has `LINEAR_API_KEY` set):
 - <criterion 1>
 - <criterion 2>
 
