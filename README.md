@@ -69,7 +69,11 @@ Skills are the *how*; the *policy* lives in a global `CLAUDE.md`
   `.claude/CLAUDE.md`. Ticket = executable spec. Status is a state machine bolted onto
   git. Comments are the work log.
 - **§7 One home per fact** — plans/decisions live in Linear, code-local conventions in
-  the repo, nothing duplicated.
+  the repo, nothing duplicated. Includes decision hygiene (docs fixed in the same
+  session as the decision) and the end-of-project archive snapshot.
+- **§8 Design & copy machinery** — the personal-project design/copy toolchain the
+  template's "Design & Copy" section points at. Example only — swap in your own tools
+  or delete both the section and the template block.
 
 ### The merge-gate hook
 
@@ -164,6 +168,16 @@ Only the first flip is manual. `In Review` and `Done` ride Linear's native GitHu
 integration; the skills attach the PR link as a comment and *verify* the transition
 landed, flipping manually only as a fallback.
 
+## External companions (not shipped here)
+
+Two skill names appear in this kit's flows but live in the operator's `~/.claude/skills/`,
+not in either kit: **`address-pr-review`** (routes review findings through
+[ai-review-kit](https://github.com/kristijan-kresic-hvar/ai-review-kit)'s playbook —
+`starting-linear-ticket` Step 9 and `linear-todo-runner` delegate to it) and
+**`babysit-prs`** (manual multi-PR sweep wrapper; the scheduled cadence is ai-review-kit's
+`babysit.sh`). Without them the flows still work — review handling just falls back to
+following ai-review-kit's playbook directly.
+
 ## Prerequisites
 
 - **Claude Code** (CLI or desktop) with `git`, `gh` (authenticated), and `node` on PATH.
@@ -214,7 +228,7 @@ Re-running is safe; every step is idempotent.
 ### If you already have a global CLAUDE.md
 
 The installer never auto-appends a full guidelines file into an existing one. Merge at
-minimum §4–§7 from [`CLAUDE.md.example`](CLAUDE.md.example) by hand — the skills assume
+minimum §4–§8 from [`CLAUDE.md.example`](CLAUDE.md.example) by hand — the skills assume
 those rules exist (especially §5's "never merge without approval", which the hook
 enforces, and §6's opt-in semantics).
 

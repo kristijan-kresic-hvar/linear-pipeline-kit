@@ -98,6 +98,30 @@ Avoid duplicating the same fact across stores (it drifts):
 - Fast-moving, code-local conventions → **repo `CLAUDE.md`** / the code itself.
 - Past Claude session recall → **claude-historian** MCP.
 
+**Decision hygiene — docs update in the SAME session as the decision, never "later":** when a decision supersedes a documented fact (stack change, dropped tool, renamed convention, new policy), immediately (1) update the fact's ONE home, (2) grep the other stores (vault `<your-vault>`, repo docs, Linear project description) for the superseded claim and fix or banner every hit, (3) if the doc can't be fixed now, add a `> [!warning] Superseded <date>` banner so it can never read as current. A decision isn't done until its paper trail is. (Added 2026-07-19 — the staleness sweep found weeks-old decisions whose old claims survived in mirrors.)
+
+**End-of-project archive (the one sanctioned duplication):** when a project ships or is archived in Linear, export ONE dated snapshot into the Obsidian vault (`07 - Archives/<project>/` — project description, key decisions, final ticket list) with a banner: "Archival snapshot <date> — project closed; not living guidance." Owned permanent record vs rented SaaS. Never mirror while the project is alive — the 2026-07-19 staleness sweep found every stale doc was a live vault mirror.
+
+## 8. Design & Copy Machinery (personal/side projects only)
+
+**Scope: personal and side projects with a UI or marketing surface. Does NOT apply to company/work projects** (anything under `<your-work-dir>/` or any client/employer repo) — those follow the company's own design system, copy process, and tooling; never run impeccable crafting, the mobbin reference pass, or the marketing-copy skills on company work unless explicitly asked.
+
+**This section is the CANONICAL home** for the design/copy toolchain (§7). Obsidian, Linear, and repo CLAUDE.md files carry pointers here, never restatements. Established 2026-07-19; rejected alternatives + rationale live in the `claude-code-curated-stack` memory — check it before swapping any lane's tool.
+
+| Lane | Tool | How |
+|---|---|---|
+| Design direction, craft, polish, audit | **impeccable** (sole driver) | `/impeccable document` → `craft` → `polish`; `audit`/`critique` after build. Brand vs product register per its docs. |
+| Design references / inspiration | **mobbin MCP** | Reference pass (`search_screens`/`search_flows`) BEFORE designing any new surface type. |
+| Design tokens | **impeccable + repo `DESIGN.md`** | Tokens live in the repo (Tailwind `@theme` / CSS vars), documented via `/impeccable document` in Stitch `DESIGN.md` format. Never invent one-off values; no token-generator skills (ui-ux-pro-max et al. rejected). |
+| Figma | **figma plugin/MCP** | ONLY when real Figma designs exist (design-to-code, asset export). Not a required step — most projects are impeccable-driven with no Figma file. |
+| Charts / data viz | **dataviz skill** | Load before writing any chart code. |
+| Marketing copy (pages, headlines, CTAs) | **copywriting skill** | Reads `.claude/product-marketing.md` — our standard location; the skills probe `.agents/product-marketing.md` first, then `.claude/` (fallback covers us). Every new project with a marketing surface gets one (brief: product, audience, objection, voice). |
+| Copy polish | **copy-editing skill** | Seven-pass edit of existing copy; not for net-new writing. |
+| Persuasion / conversion psychology | **marketing-psychology skill** | Biases, framing, social proof, scarcity — the "why people buy" layer under the copy. |
+| UX microcopy (buttons, empty states, errors) | **impeccable** | Stays in the design lane, not the marketing-copy lane. |
+
+New project bootstrap: create `.claude/product-marketing.md` (if it has a marketing surface) + `DESIGN.md` via `/impeccable document`, run the mobbin reference pass, then build. Copy trio + impeccable + dataviz are global skills — nothing to install per-project. **Check the parked watch-items** in the `claude-code-curated-stack` memory and install any whose trigger now fires (e.g. React project → vercel-react-best-practices + vercel-composition-patterns; heavy TS refactor → typescript-lsp).
+
 ## Web search fallback
 
 The `exa` MCP is the preferred web search/fetch tool, but it runs on a free tier (1000 requests/month). If an `exa` call fails or rate-limits (e.g. `429`/`402`), do not stop — automatically retry the same query with the built-in `WebSearch` / `WebFetch` tools (free, no key, always available). Never surface an exa quota error as a dead end when built-in search can answer it.
