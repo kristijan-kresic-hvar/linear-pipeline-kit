@@ -89,7 +89,7 @@ Output should be:
 
 ### Step 2: Scope Cut (REDUCE)
 
-*(Folded in from the archived `plan-review-ceo` skill 2026-07-07 — solo, only its REDUCE phase earned its keep. If the team ever grows past one person, resurrect the full EXPAND → HOLD → REDUCE arc from `~/.claude/skills/plan-review-ceo/SKILL.md.archived` — shared-vision building is where EXPAND/HOLD pay off.)*
+*(Owned by the `plan-review-ceo` skill — archived 2026-07-07 as "solo ceremony", **unarchived 2026-07-19**: the EXPAND/HOLD questions are answered by the operator, so depth pays off solo too. For substantial new projects, run the full `plan-review-ceo` EXPAND → HOLD → REDUCE arc before this step and treat this step as its REDUCE output; for small additions to an existing project, this batched REDUCE alone is enough.)*
 
 Run a ruthless scope cut on the brainstorming output. **Batch all of it into ONE message** with a recommended answer per item ("all recommendations fine" must be a valid one-word reply):
 
