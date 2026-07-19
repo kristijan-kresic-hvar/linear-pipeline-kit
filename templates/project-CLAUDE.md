@@ -26,6 +26,16 @@ The Linear pipeline skills (starting-linear-ticket, freshness-check, linear-todo
 - Package manager: <npm | pnpm | yarn | bun | uv | poetry | ...>
 - DB / infra: <...>
 
+## Design & Copy
+<!-- Personal/side projects with a UI or marketing surface: the toolchain is global
+     CLAUDE.md §8 (impeccable driver, mobbin reference pass, copywriting/copy-editing/
+     marketing-psychology for marketing copy). Bootstrap per §8: create
+     .claude/product-marketing.md + DESIGN.md via /impeccable document, run the mobbin
+     pass, check parked watch-items (React project → vercel react skills, etc.).
+     Delete this section for company/work repos — §8 does not apply there. -->
+- Register: <brand | product>
+- Design source: <impeccable-driven | Figma file if one exists>
+
 ## Sharp Edges
 - <non-obvious constraints, footguns, things that have bitten before>
 
