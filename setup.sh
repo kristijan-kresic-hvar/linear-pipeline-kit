@@ -172,7 +172,7 @@ elif grep -q 'Task Tracking with Linear' "$CLAUDE_DIR/CLAUDE.md"; then
   echo "  = CLAUDE.md already carries the Linear workflow rules"
 else
   echo "  ! CLAUDE.md exists but has no Linear workflow section — merge the relevant"
-  echo "    sections (at minimum §4-§7) from $KIT/CLAUDE.md.example by hand."
+  echo "    sections (at minimum §4-§8) from $KIT/CLAUDE.md.example by hand."
 fi
 
 echo
