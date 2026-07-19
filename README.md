@@ -53,7 +53,7 @@ example uses the team key `KKD`, substitute your own.
 | `plan-review-eng` | Architecture review during planning; code-quality/test/perf review during execution. Question-driven, 3–5 questions per pass. |
 | `verify-library-api` | Check the *installed* version of a library before writing integration code — kills the "trained on an older API" bug class. |
 | `rapid-prototype` | The escape hatch: genuinely disposable work (spikes, demos, take-homes) deliberately skips Linear, worktrees, TDD, and PRs. |
-| `plan-review-ceo` (archived) | Business-value review pass. Archived as solo ceremony (`SKILL.md.archived`) — resurrect if a team forms. |
+| `plan-review-ceo` | Business-value review: EXPAND (10x version) → HOLD (lock scope) → REDUCE (cut to essentials). Run on substantial new projects before ticketing; small additions use creating-linear-tickets' built-in REDUCE alone. (Archived 2026-07-07 as solo ceremony, unarchived 2026-07-19 — the operator answers the questions, so depth pays solo too.) |
 
 ### The rules layer
 
@@ -254,7 +254,7 @@ enforces, and §6's opt-in semantics).
 | `skills/plan-review-eng/` | Question-driven architecture / code-quality / test / perf review |
 | `skills/verify-library-api/` | Check installed library versions before writing integration code |
 | `skills/rapid-prototype/` | Disposable-work escape hatch (skips the whole pipeline, on purpose) |
-| `skills/plan-review-ceo/SKILL.md.archived` | Archived business-value review — for teams, not solos |
+| `skills/plan-review-ceo/SKILL.md` | Business-value review (EXPAND → HOLD → REDUCE) |
 | `hooks/merge-gate.mjs` | PreToolUse hook: bans main-pushes + merge bypasses, gates `gh pr merge` on reviewer state, fails closed |
 | `hooks/merge-gate.test.mjs` | Plain-node regression tests for the hook (no framework, no network — stubbed `gh`, fixture repos). Run `node hooks/merge-gate.test.mjs` after any hook edit |
 | `templates/project-CLAUDE.md` | Per-repo seed: Linear opt-in block + verification commands the skills read |
